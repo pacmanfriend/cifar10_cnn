@@ -1,4 +1,5 @@
 mod conv;
+mod cuda;
 mod datasets;
 mod dense;
 mod maxpool;
@@ -7,15 +8,25 @@ mod random;
 mod relu;
 mod tensor;
 
-// use std::f32;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mode = std::env::args().nth(1).unwrap_or_else(|| "cpu".to_string());
 
-fn main() {
+    let backend = match mode.as_str() {
+        "cpu" => network::Backend::Cpu,
+        "gpu" | "cuda" => network::Backend::Gpu,
+        _ => return Err(format!("unknown mode '{mode}', use 'cpu' or 'gpu'").into()),
+    };
+
+    train(backend)
+}
+
+fn train(backend: network::Backend) -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = random::Rng::new(42);
-    let mut net = network::Network::new(&mut rng);
+    let mut net = network::Network::new(&mut rng, backend)?;
     let dataset = datasets::make_fake_dataset();
 
     println!("Dataset size: {}", dataset.len());
-    println!("Start training...\n");
+    println!("Start {backend:?} training...\n");
 
     let lr = 0.05;
     for epoch in 0..50 {
@@ -23,7 +34,7 @@ fn main() {
         let mut correct = 0;
 
         for (input, target) in dataset.iter() {
-            let (loss, predicted) = net.train_step(input, *target, lr);
+            let (loss, predicted) = net.train_step(input, *target, lr)?;
             total_loss += loss;
             if predicted == *target {
                 correct += 1;
@@ -40,4 +51,6 @@ fn main() {
             );
         }
     }
+
+    Ok(())
 }

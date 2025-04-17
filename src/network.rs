@@ -1,6 +1,22 @@
-use crate::{conv, dense, maxpool, random, relu, tensor};
+use crate::{conv, cuda, dense, maxpool, random, relu, tensor};
+use std::error::Error;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Backend {
+    Cpu,
+    Gpu,
+}
 
 pub struct Network {
+    inner: NetworkInner,
+}
+
+enum NetworkInner {
+    Cpu(Box<CpuNetwork>),
+    Gpu(Box<cuda::CudaNetwork>),
+}
+
+struct CpuNetwork {
     conv: conv::Conv2D,
     relu: relu::ReLU,
     pool: maxpool::MaxPool2x2,
@@ -8,8 +24,31 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new(rng: &mut random::Rng) -> Self {
-        Network {
+    pub fn new(rng: &mut random::Rng, backend: Backend) -> Result<Self, Box<dyn Error>> {
+        let inner = match backend {
+            Backend::Cpu => NetworkInner::Cpu(Box::new(CpuNetwork::new(rng))),
+            Backend::Gpu => NetworkInner::Gpu(Box::new(cuda::CudaNetwork::new(rng)?)),
+        };
+
+        Ok(Network { inner })
+    }
+
+    pub fn train_step(
+        &mut self,
+        input: &tensor::Tensor,
+        target: usize,
+        lr: f32,
+    ) -> Result<(f32, usize), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => Ok(net.train_step(input, target, lr)),
+            NetworkInner::Gpu(net) => Ok(net.train_step(&input.data, target, lr)?),
+        }
+    }
+}
+
+impl CpuNetwork {
+    fn new(rng: &mut random::Rng) -> Self {
+        CpuNetwork {
             conv: conv::Conv2D::new(1, 4, 3, rng),
             relu: relu::ReLU::new(),
             pool: maxpool::MaxPool2x2::new(),
@@ -17,8 +56,7 @@ impl Network {
         }
     }
 
-    // One train step: forward + loss + backward + update.
-    pub fn train_step(&mut self, input: &tensor::Tensor, target: usize, lr: f32) -> (f32, usize) {
+    fn train_step(&mut self, input: &tensor::Tensor, target: usize, lr: f32) -> (f32, usize) {
         let x = self.conv.forward(input);
         let x = self.relu.forward(&x);
         let x = self.pool.forward(&x);
