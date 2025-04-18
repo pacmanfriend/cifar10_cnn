@@ -1,7 +1,9 @@
+mod config;
 mod conv;
 mod cuda;
 mod datasets;
 mod dense;
+mod loss;
 mod maxpool;
 mod network;
 mod random;
@@ -22,7 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn train(backend: network::Backend) -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = random::Rng::new(42);
-    let mut net = network::Network::new(&mut rng, backend)?;
+    let config = config::ModelConfig::demo();
+    let mut net = network::Network::new(config, &mut rng, backend)?;
     let dataset = datasets::make_fake_dataset();
 
     println!("Dataset size: {}", dataset.len());

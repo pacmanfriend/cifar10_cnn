@@ -23,6 +23,8 @@ impl Conv2D {
     }
 
     pub fn forward(&mut self, input: &tensor::Tensor) -> tensor::Tensor {
+        debug_assert_eq!(input.rank(), 3);
+
         let c_in = input.shape[0];
         let h = input.shape[1];
         let w = input.shape[2];
