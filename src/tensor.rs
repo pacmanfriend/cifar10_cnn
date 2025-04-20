@@ -50,3 +50,34 @@ impl Tensor {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Tensor;
+
+    #[test]
+    fn from_data_accepts_matching_shape() {
+        let tensor = Tensor::from_data(vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2]);
+
+        assert_eq!(tensor.numel(), 4);
+        assert_eq!(tensor.rank(), 3);
+        assert_eq!(tensor.shape, vec![1, 2, 2]);
+    }
+
+    #[test]
+    fn reshape_preserves_data_and_updates_shape() {
+        let tensor = Tensor::from_data(vec![1.0, 2.0, 3.0, 4.0], vec![4]);
+        let reshaped = tensor.reshape(vec![2, 2]);
+
+        assert_eq!(reshaped.data, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(reshaped.shape, vec![2, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "reshape must preserve tensor element count")]
+    fn reshape_rejects_mismatched_shape() {
+        let tensor = Tensor::from_data(vec![1.0, 2.0, 3.0, 4.0], vec![4]);
+
+        let _ = tensor.reshape(vec![3]);
+    }
+}

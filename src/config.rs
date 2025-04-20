@@ -52,3 +52,22 @@ impl ModelConfig {
         self.conv_out_channels * self.input_channels * self.conv_kernel * self.conv_kernel
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ModelConfig;
+
+    #[test]
+    fn demo_config_derives_expected_dimensions() {
+        let config = ModelConfig::demo();
+
+        assert_eq!(config.conv_height(), 6);
+        assert_eq!(config.conv_width(), 6);
+        assert_eq!(config.conv_dim(), 144);
+        assert_eq!(config.pool_height(), 3);
+        assert_eq!(config.pool_width(), 3);
+        assert_eq!(config.flat_dim(), 36);
+        assert_eq!(config.input_dim(), 64);
+        assert_eq!(config.conv_weight_len(), 36);
+    }
+}
