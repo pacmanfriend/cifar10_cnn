@@ -71,13 +71,13 @@ impl CpuNetwork {
         debug_assert_eq!(input.numel(), self.config.input_dim());
         debug_assert!(target < self.config.num_classes);
 
-        let x = self.conv.forward(input);
-        let x = self.relu.forward(&x);
-        let x = self.pool.forward(&x);
+        let (x, conv_cache) = self.conv.forward(input);
+        let (x, relu_cache) = self.relu.forward(&x);
+        let (x, pool_cache) = self.pool.forward(&x);
 
         let flat = x.reshape(vec![self.config.flat_dim()]);
 
-        let logits = self.fc.forward(&flat);
+        let (logits, fc_cache) = self.fc.forward(&flat);
         let probs = loss::softmax(&logits);
 
         let loss = loss::cross_entropy(&probs, target);
@@ -86,7 +86,7 @@ impl CpuNetwork {
         let mut grad_logits = probs.clone();
         grad_logits.data[target] -= 1.0;
 
-        let grad_flat = self.fc.backward(&grad_logits);
+        let grad_flat = self.fc.backward(&fc_cache, &grad_logits);
 
         let grad_pool_in = grad_flat.reshape(vec![
             self.config.conv_out_channels,
@@ -94,9 +94,9 @@ impl CpuNetwork {
             self.config.pool_width(),
         ]);
 
-        let grad_relu_in = self.pool.backward(&grad_pool_in);
-        let grad_conv_in = self.relu.backward(&grad_relu_in);
-        let _ = self.conv.backward(&grad_conv_in);
+        let grad_relu_in = self.pool.backward(&pool_cache, &grad_pool_in);
+        let grad_conv_in = self.relu.backward(&relu_cache, &grad_relu_in);
+        let _ = self.conv.backward(&conv_cache, &grad_conv_in);
 
         // Step SGD.
         self.conv.step(lr);

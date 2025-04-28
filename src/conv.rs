@@ -3,9 +3,12 @@ use crate::{random, tensor};
 pub struct Conv2D {
     weights: tensor::Tensor,
     bias: tensor::Tensor,
-    last_input: Option<tensor::Tensor>, // cache for backward
     grad_w: tensor::Tensor,
     grad_b: tensor::Tensor,
+}
+
+pub struct Conv2DCache {
+    input: tensor::Tensor,
 }
 
 impl Conv2D {
@@ -16,13 +19,12 @@ impl Conv2D {
         Conv2D {
             weights: tensor::Tensor::random(vec![c_out, c_in, k, k], rng, scale),
             bias: tensor::Tensor::zeros(vec![c_out]),
-            last_input: None,
             grad_w: tensor::Tensor::zeros(vec![c_out, c_in, k, k]),
             grad_b: tensor::Tensor::zeros(vec![c_out]),
         }
     }
 
-    pub fn forward(&mut self, input: &tensor::Tensor) -> tensor::Tensor {
+    pub fn forward(&self, input: &tensor::Tensor) -> (tensor::Tensor, Conv2DCache) {
         debug_assert_eq!(input.rank(), 3);
 
         let c_in = input.shape[0];
@@ -53,12 +55,20 @@ impl Conv2D {
             }
         }
 
-        self.last_input = Some(input.clone());
-        output
+        (
+            output,
+            Conv2DCache {
+                input: input.clone(),
+            },
+        )
     }
 
-    pub fn backward(&mut self, grad_output: &tensor::Tensor) -> tensor::Tensor {
-        let input = self.last_input.as_ref().expect("forward не был вызван");
+    pub fn backward(
+        &mut self,
+        cache: &Conv2DCache,
+        grad_output: &tensor::Tensor,
+    ) -> tensor::Tensor {
+        let input = &cache.input;
         let c_in = input.shape[0];
         let h = input.shape[1];
         let w = input.shape[2];

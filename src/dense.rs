@@ -3,9 +3,12 @@ use crate::{random, tensor};
 pub struct Dense {
     weights: tensor::Tensor,
     bias: tensor::Tensor,
-    last_input: Option<tensor::Tensor>,
     grad_w: tensor::Tensor,
     grad_b: tensor::Tensor,
+}
+
+pub struct DenseCache {
+    input: tensor::Tensor,
 }
 
 impl Dense {
@@ -15,13 +18,12 @@ impl Dense {
         Dense {
             weights: tensor::Tensor::random(vec![out_features, in_features], rng, scale),
             bias: tensor::Tensor::zeros(vec![out_features]),
-            last_input: None,
             grad_w: tensor::Tensor::zeros(vec![out_features, in_features]),
             grad_b: tensor::Tensor::zeros(vec![out_features]),
         }
     }
 
-    pub fn forward(&mut self, input: &tensor::Tensor) -> tensor::Tensor {
+    pub fn forward(&self, input: &tensor::Tensor) -> (tensor::Tensor, DenseCache) {
         let in_f = self.weights.shape[1];
         let out_f = self.weights.shape[0];
         let mut output = tensor::Tensor::zeros(vec![out_f]);
@@ -34,12 +36,16 @@ impl Dense {
             output.data[i] = sum;
         }
 
-        self.last_input = Some(input.clone());
-        output
+        (
+            output,
+            DenseCache {
+                input: input.clone(),
+            },
+        )
     }
 
-    pub fn backward(&mut self, grad_output: &tensor::Tensor) -> tensor::Tensor {
-        let input = self.last_input.as_ref().unwrap();
+    pub fn backward(&mut self, cache: &DenseCache, grad_output: &tensor::Tensor) -> tensor::Tensor {
+        let input = &cache.input;
         let in_f = self.weights.shape[1];
         let out_f = self.weights.shape[0];
         let mut grad_input = tensor::Tensor::zeros(vec![in_f]);
