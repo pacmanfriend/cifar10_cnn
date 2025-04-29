@@ -6,6 +6,12 @@ pub struct ReLUCache {
     input: tensor::Tensor,
 }
 
+impl Default for ReLU {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReLU {
     pub fn new() -> Self {
         ReLU

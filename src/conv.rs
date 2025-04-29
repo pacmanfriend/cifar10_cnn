@@ -1,10 +1,18 @@
-use crate::{random, tensor};
+use crate::{optimizer, random, tensor};
 
 pub struct Conv2D {
+    params: Conv2DParams,
+    grads: Conv2DGrads,
+}
+
+struct Conv2DParams {
     weights: tensor::Tensor,
     bias: tensor::Tensor,
-    grad_w: tensor::Tensor,
-    grad_b: tensor::Tensor,
+}
+
+struct Conv2DGrads {
+    weights: tensor::Tensor,
+    bias: tensor::Tensor,
 }
 
 pub struct Conv2DCache {
@@ -17,10 +25,14 @@ impl Conv2D {
         let scale = (2.0 / fan_in as f32).sqrt();
 
         Conv2D {
-            weights: tensor::Tensor::random(vec![c_out, c_in, k, k], rng, scale),
-            bias: tensor::Tensor::zeros(vec![c_out]),
-            grad_w: tensor::Tensor::zeros(vec![c_out, c_in, k, k]),
-            grad_b: tensor::Tensor::zeros(vec![c_out]),
+            params: Conv2DParams {
+                weights: tensor::Tensor::random(vec![c_out, c_in, k, k], rng, scale),
+                bias: tensor::Tensor::zeros(vec![c_out]),
+            },
+            grads: Conv2DGrads {
+                weights: tensor::Tensor::zeros(vec![c_out, c_in, k, k]),
+                bias: tensor::Tensor::zeros(vec![c_out]),
+            },
         }
     }
 
@@ -30,8 +42,8 @@ impl Conv2D {
         let c_in = input.shape[0];
         let h = input.shape[1];
         let w = input.shape[2];
-        let c_out = self.weights.shape[0];
-        let k = self.weights.shape[2];
+        let c_out = self.params.weights.shape[0];
+        let k = self.params.weights.shape[2];
         let h_out = h - k + 1;
         let w_out = w - k + 1;
 
@@ -40,13 +52,13 @@ impl Conv2D {
         for co in 0..c_out {
             for i in 0..h_out {
                 for j in 0..w_out {
-                    let mut sum = self.bias.data[co];
+                    let mut sum = self.params.bias.data[co];
                     for ci in 0..c_in {
                         for ki in 0..k {
                             for kj in 0..k {
                                 let in_idx = ci * h * w + (i + ki) * w + (j + kj);
                                 let w_idx = co * c_in * k * k + ci * k * k + ki * k + kj;
-                                sum += input.data[in_idx] * self.weights.data[w_idx];
+                                sum += input.data[in_idx] * self.params.weights.data[w_idx];
                             }
                         }
                     }
@@ -72,17 +84,17 @@ impl Conv2D {
         let c_in = input.shape[0];
         let h = input.shape[1];
         let w = input.shape[2];
-        let c_out = self.weights.shape[0];
-        let k = self.weights.shape[2];
+        let c_out = self.params.weights.shape[0];
+        let k = self.params.weights.shape[2];
         let h_out = h - k + 1;
         let w_out = w - k + 1;
 
         let mut grad_input = tensor::Tensor::zeros(vec![c_in, h, w]);
 
-        for v in self.grad_w.data.iter_mut() {
+        for v in self.grads.weights.data.iter_mut() {
             *v = 0.0;
         }
-        for v in self.grad_b.data.iter_mut() {
+        for v in self.grads.bias.data.iter_mut() {
             *v = 0.0;
         }
 
@@ -90,14 +102,14 @@ impl Conv2D {
             for i in 0..h_out {
                 for j in 0..w_out {
                     let g = grad_output.data[co * h_out * w_out + i * w_out + j];
-                    self.grad_b.data[co] += g;
+                    self.grads.bias.data[co] += g;
                     for ci in 0..c_in {
                         for ki in 0..k {
                             for kj in 0..k {
                                 let in_idx = ci * h * w + (i + ki) * w + (j + kj);
                                 let w_idx = co * c_in * k * k + ci * k * k + ki * k + kj;
-                                self.grad_w.data[w_idx] += input.data[in_idx] * g;
-                                grad_input.data[in_idx] += self.weights.data[w_idx] * g;
+                                self.grads.weights.data[w_idx] += input.data[in_idx] * g;
+                                grad_input.data[in_idx] += self.params.weights.data[w_idx] * g;
                             }
                         }
                     }
@@ -108,12 +120,10 @@ impl Conv2D {
         grad_input
     }
 
-    pub fn step(&mut self, lr: f32) {
-        for i in 0..self.weights.data.len() {
-            self.weights.data[i] -= lr * self.grad_w.data[i];
-        }
-        for i in 0..self.bias.data.len() {
-            self.bias.data[i] -= lr * self.grad_b.data[i];
-        }
+    pub fn trainable_parameters_mut(&mut self) -> [optimizer::ParamGrad<'_>; 2] {
+        [
+            optimizer::ParamGrad::new(&mut self.params.weights, &self.grads.weights),
+            optimizer::ParamGrad::new(&mut self.params.bias, &self.grads.bias),
+        ]
     }
 }

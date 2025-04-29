@@ -1,14 +1,4 @@
-mod config;
-mod conv;
-mod cuda;
-mod datasets;
-mod dense;
-mod loss;
-mod maxpool;
-mod network;
-mod random;
-mod relu;
-mod tensor;
+use cifar10_cnn::{config, datasets, network, random};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "cpu".to_string());

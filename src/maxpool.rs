@@ -7,6 +7,12 @@ pub struct MaxPool2x2Cache {
     input_shape: Vec<usize>,
 }
 
+impl Default for MaxPool2x2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MaxPool2x2 {
     pub fn new() -> Self {
         MaxPool2x2

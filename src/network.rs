@@ -1,4 +1,4 @@
-use crate::{config, conv, cuda, dense, loss, maxpool, random, relu, tensor};
+use crate::{config, conv, cuda, dense, loss, maxpool, optimizer, random, relu, tensor};
 use std::error::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,9 +98,9 @@ impl CpuNetwork {
         let grad_conv_in = self.relu.backward(&relu_cache, &grad_relu_in);
         let _ = self.conv.backward(&conv_cache, &grad_conv_in);
 
-        // Step SGD.
-        self.conv.step(lr);
-        self.fc.step(lr);
+        let optimizer = optimizer::Sgd::new(lr);
+        optimizer.step(self.conv.trainable_parameters_mut());
+        optimizer.step(self.fc.trainable_parameters_mut());
 
         (loss, predicted)
     }
