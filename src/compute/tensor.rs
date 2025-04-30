@@ -1,4 +1,4 @@
-use crate::random;
+use crate::compute::random;
 
 #[derive(Clone)]
 pub struct Tensor {

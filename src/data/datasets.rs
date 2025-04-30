@@ -1,4 +1,4 @@
-use crate::tensor;
+use crate::compute::tensor;
 
 pub fn make_fake_dataset() -> Vec<(tensor::Tensor, usize)> {
     let mut data = vec![];

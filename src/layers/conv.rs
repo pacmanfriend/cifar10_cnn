@@ -1,4 +1,7 @@
-use crate::{optimizer, random, tensor};
+use crate::{
+    compute::{random, tensor},
+    training::optimizer,
+};
 
 pub struct Conv2D {
     params: Conv2DParams,

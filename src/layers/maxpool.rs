@@ -1,4 +1,4 @@
-use crate::tensor;
+use crate::compute::tensor;
 
 pub struct MaxPool2x2;
 
@@ -78,7 +78,7 @@ impl MaxPool2x2 {
 #[cfg(test)]
 mod tests {
     use super::MaxPool2x2;
-    use crate::tensor::Tensor;
+    use crate::compute::tensor::Tensor;
 
     #[test]
     fn backward_uses_explicit_cache() {

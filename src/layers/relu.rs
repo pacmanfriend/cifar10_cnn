@@ -1,4 +1,4 @@
-use crate::tensor;
+use crate::compute::tensor;
 
 pub struct ReLU;
 
@@ -49,7 +49,7 @@ impl ReLU {
 #[cfg(test)]
 mod tests {
     use super::ReLU;
-    use crate::tensor::Tensor;
+    use crate::compute::tensor::Tensor;
 
     #[test]
     fn backward_uses_explicit_cache() {

@@ -1,4 +1,4 @@
-use crate::tensor;
+use crate::compute::tensor;
 
 pub fn softmax(logits: &tensor::Tensor) -> tensor::Tensor {
     let max_val = logits
@@ -30,7 +30,7 @@ pub fn argmax(t: &tensor::Tensor) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{argmax, cross_entropy, softmax};
-    use crate::tensor::Tensor;
+    use crate::compute::tensor::Tensor;
 
     #[test]
     fn softmax_outputs_probabilities() {

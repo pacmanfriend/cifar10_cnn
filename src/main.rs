@@ -1,4 +1,4 @@
-use cifar10_cnn::{config, datasets, network, random};
+use cifar10_cnn::{compute::random, config, data::datasets, training::network};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "cpu".to_string());

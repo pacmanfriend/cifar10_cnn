@@ -1,4 +1,4 @@
-use crate::tensor;
+use crate::compute::tensor;
 
 pub struct ParamGrad<'a> {
     param: &'a mut tensor::Tensor,
@@ -40,7 +40,7 @@ impl Sgd {
 #[cfg(test)]
 mod tests {
     use super::{ParamGrad, Sgd};
-    use crate::tensor::Tensor;
+    use crate::compute::tensor::Tensor;
 
     #[test]
     fn sgd_updates_parameter_tensor() {

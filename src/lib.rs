@@ -1,12 +1,11 @@
+pub mod compute;
 pub mod config;
-pub mod conv;
 pub mod cuda;
-pub mod datasets;
-pub mod dense;
-pub mod loss;
-pub mod maxpool;
-pub mod network;
-pub mod optimizer;
-pub mod random;
-pub mod relu;
-pub mod tensor;
+pub mod data;
+pub mod layers;
+pub mod training;
+
+pub use compute::{random, tensor};
+pub use data::datasets;
+pub use layers::{conv, dense, maxpool, relu};
+pub use training::{loss, network, optimizer};

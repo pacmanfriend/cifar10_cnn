@@ -1,4 +1,4 @@
-use crate::{config, random};
+use crate::{compute::random, config};
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DriverError, LaunchConfig,
     PushKernelArg,

@@ -1,4 +1,9 @@
-use crate::{config, conv, cuda, dense, loss, maxpool, optimizer, random, relu, tensor};
+use crate::{
+    compute::{random, tensor},
+    config, cuda,
+    layers::{conv, dense, maxpool, relu},
+    training::{loss, optimizer},
+};
 use std::error::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
