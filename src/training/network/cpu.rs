@@ -1,27 +1,11 @@
 use crate::{
     compute::{random, tensor},
-    config, cuda,
+    config,
     layers::{conv, dense, maxpool, relu},
     training::{loss, optimizer},
 };
-use std::error::Error;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Backend {
-    Cpu,
-    Gpu,
-}
-
-pub struct Network {
-    inner: NetworkInner,
-}
-
-enum NetworkInner {
-    Cpu(Box<CpuNetwork>),
-    Gpu(Box<cuda::CudaNetwork>),
-}
-
-struct CpuNetwork {
+pub(super) struct CpuNetwork {
     conv: conv::Conv2D,
     relu: relu::ReLU,
     pool: maxpool::MaxPool2x2,
@@ -29,35 +13,8 @@ struct CpuNetwork {
     config: config::ModelConfig,
 }
 
-impl Network {
-    pub fn new(
-        config: config::ModelConfig,
-        rng: &mut random::Rng,
-        backend: Backend,
-    ) -> Result<Self, Box<dyn Error>> {
-        let inner = match backend {
-            Backend::Cpu => NetworkInner::Cpu(Box::new(CpuNetwork::new(config, rng))),
-            Backend::Gpu => NetworkInner::Gpu(Box::new(cuda::CudaNetwork::new(config, rng)?)),
-        };
-
-        Ok(Network { inner })
-    }
-
-    pub fn train_step(
-        &mut self,
-        input: &tensor::Tensor,
-        target: usize,
-        lr: f32,
-    ) -> Result<(f32, usize), Box<dyn Error>> {
-        match &mut self.inner {
-            NetworkInner::Cpu(net) => Ok(net.train_step(input, target, lr)),
-            NetworkInner::Gpu(net) => Ok(net.train_step(&input.data, target, lr)?),
-        }
-    }
-}
-
 impl CpuNetwork {
-    fn new(config: config::ModelConfig, rng: &mut random::Rng) -> Self {
+    pub(super) fn new(config: config::ModelConfig, rng: &mut random::Rng) -> Self {
         CpuNetwork {
             conv: conv::Conv2D::new(
                 config.input_channels,
@@ -72,7 +29,12 @@ impl CpuNetwork {
         }
     }
 
-    fn train_step(&mut self, input: &tensor::Tensor, target: usize, lr: f32) -> (f32, usize) {
+    pub(super) fn train_step(
+        &mut self,
+        input: &tensor::Tensor,
+        target: usize,
+        lr: f32,
+    ) -> (f32, usize) {
         debug_assert_eq!(input.numel(), self.config.input_dim());
         debug_assert!(target < self.config.num_classes);
 
