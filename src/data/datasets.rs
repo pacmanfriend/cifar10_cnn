@@ -47,3 +47,21 @@ pub fn make_fake_dataset() -> Vec<(tensor::Tensor, usize)> {
 
     data
 }
+
+#[cfg(test)]
+mod tests {
+    use super::make_fake_dataset;
+
+    #[test]
+    fn fake_dataset_has_expected_shape_and_classes() {
+        let dataset = make_fake_dataset();
+
+        assert_eq!(dataset.len(), 12);
+
+        for (input, target) in dataset {
+            assert_eq!(input.shape, vec![1, 8, 8]);
+            assert_eq!(input.data.len(), 64);
+            assert!((0..3).contains(&target), "unexpected class: {target}");
+        }
+    }
+}
