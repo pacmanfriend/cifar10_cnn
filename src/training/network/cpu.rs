@@ -20,6 +20,7 @@ impl CpuNetwork {
                 config.input_channels,
                 config.conv_out_channels,
                 config.conv_kernel,
+                config.conv_padding,
                 rng,
             ),
             relu: relu::ReLU::new(),
