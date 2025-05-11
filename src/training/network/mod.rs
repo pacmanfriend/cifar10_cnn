@@ -2,7 +2,7 @@ use crate::{
     compute::{random, tensor},
     config, cuda,
 };
-use std::error::Error;
+use std::{error::Error, io};
 
 mod cpu;
 
@@ -46,6 +46,22 @@ impl Network {
             NetworkInner::Gpu(net) => Ok(net.train_step(&input.data, target, lr)?),
         }
     }
+
+    pub fn train_step_batch(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+    ) -> Result<(f32, usize), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => Ok(net.train_step_batch(input, targets, lr)),
+            NetworkInner::Gpu(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "batched train_step is not implemented for GPU backend yet",
+            )
+            .into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +88,37 @@ mod tests {
                 "loss mismatch: {first_loss} != {second_loss}"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_train_step_batch_is_deterministic_for_fixed_seed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config = config::ModelConfig::demo();
+        let dataset = datasets::make_fake_dataset();
+        let input = crate::compute::tensor::Tensor::from_data(
+            dataset
+                .iter()
+                .take(2)
+                .flat_map(|(input, _)| input.data.iter().copied())
+                .collect(),
+            vec![2, 1, 8, 8],
+        );
+        let targets: Vec<usize> = dataset.iter().take(2).map(|(_, target)| *target).collect();
+        let mut first_rng = random::Rng::new(7);
+        let mut second_rng = random::Rng::new(7);
+        let mut first = Network::new(config, &mut first_rng, Backend::Cpu)?;
+        let mut second = Network::new(config, &mut second_rng, Backend::Cpu)?;
+
+        let (first_loss, first_correct) = first.train_step_batch(&input, &targets, 0.05)?;
+        let (second_loss, second_correct) = second.train_step_batch(&input, &targets, 0.05)?;
+
+        assert_eq!(first_correct, second_correct);
+        assert!(
+            (first_loss - second_loss).abs() <= f32::EPSILON,
+            "loss mismatch: {first_loss} != {second_loss}"
+        );
 
         Ok(())
     }
