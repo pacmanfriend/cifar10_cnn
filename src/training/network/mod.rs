@@ -124,6 +124,22 @@ mod tests {
     }
 
     #[test]
+    fn cpu_cifar10_train_step_accepts_two_layer_batch() -> Result<(), Box<dyn std::error::Error>> {
+        let config = config::ModelConfig::cifar10();
+        let input = crate::compute::tensor::Tensor::zeros(vec![1, 3, 32, 32]);
+        let targets = [0];
+        let mut rng = random::Rng::new(13);
+        let mut net = Network::new(config, &mut rng, Backend::Cpu)?;
+
+        let (loss, correct) = net.train_step_batch(&input, &targets, 0.01)?;
+
+        assert!(loss.is_finite());
+        assert!(correct <= targets.len());
+
+        Ok(())
+    }
+
+    #[test]
     #[ignore]
     fn cpu_and_gpu_train_step_match_for_fixed_seed() -> Result<(), Box<dyn std::error::Error>> {
         let config = config::ModelConfig::demo();
