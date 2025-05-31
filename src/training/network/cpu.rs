@@ -1,52 +1,74 @@
 use crate::{
     compute::{random, tensor},
     config,
-    layers::{conv, dense, maxpool, relu},
-    training::{loss, optimizer},
+    training::graph::{Graph, NodeId},
 };
 
 pub(super) struct CpuNetwork {
-    conv1: conv::Conv2D,
-    relu1: relu::ReLU,
-    pool1: maxpool::MaxPool2x2,
-    conv2: Option<conv::Conv2D>,
-    relu2: Option<relu::ReLU>,
-    pool2: Option<maxpool::MaxPool2x2>,
-    fc: dense::Dense,
+    graph: Graph,
+    conv1_w: NodeId,
+    conv1_b: NodeId,
+    conv2_w: Option<NodeId>,
+    conv2_b: Option<NodeId>,
+    fc_w: NodeId,
+    fc_b: NodeId,
     config: config::ModelConfig,
 }
 
 impl CpuNetwork {
     pub(super) fn new(config: config::ModelConfig, rng: &mut random::Rng) -> Self {
-        let conv1 = conv::Conv2D::new(
-            config.input_channels,
-            config.conv_out_channels,
-            config.conv_kernel,
-            config.conv_padding,
+        let mut graph = Graph::new();
+
+        let conv1_w = add_weight(
+            &mut graph,
+            vec![
+                config.conv_out_channels,
+                config.input_channels,
+                config.conv_kernel,
+                config.conv_kernel,
+            ],
+            config.input_channels * config.conv_kernel * config.conv_kernel,
             rng,
         );
-        let conv2 = config.conv2_out_channels.map(|out_channels| {
-            conv::Conv2D::new(
-                config.conv_out_channels,
-                out_channels,
-                config.conv_kernel,
-                config.conv_padding,
-                rng,
-            )
-        });
-        let relu2 = config.conv2_out_channels.map(|_| relu::ReLU::new());
-        let pool2 = config
-            .conv2_out_channels
-            .map(|_| maxpool::MaxPool2x2::new());
+        let conv1_b = graph.add_leaf(tensor::Tensor::zeros(vec![config.conv_out_channels]), true);
+
+        let (conv2_w, conv2_b) = match config.conv2_out_channels {
+            Some(out_channels) => {
+                let weights = add_weight(
+                    &mut graph,
+                    vec![
+                        out_channels,
+                        config.conv_out_channels,
+                        config.conv_kernel,
+                        config.conv_kernel,
+                    ],
+                    config.conv_out_channels * config.conv_kernel * config.conv_kernel,
+                    rng,
+                );
+                let bias = graph.add_leaf(tensor::Tensor::zeros(vec![out_channels]), true);
+                (Some(weights), Some(bias))
+            }
+            None => (None, None),
+        };
+
+        let fc_w = add_weight(
+            &mut graph,
+            vec![config.num_classes, config.flat_dim()],
+            config.flat_dim(),
+            rng,
+        );
+        let fc_b = graph.add_leaf(tensor::Tensor::zeros(vec![config.num_classes]), true);
+
+        graph.finalize_params();
 
         CpuNetwork {
-            conv1,
-            relu1: relu::ReLU::new(),
-            pool1: maxpool::MaxPool2x2::new(),
-            conv2,
-            relu2,
-            pool2,
-            fc: dense::Dense::new(config.flat_dim(), config.num_classes, rng),
+            graph,
+            conv1_w,
+            conv1_b,
+            conv2_w,
+            conv2_b,
+            fc_w,
+            fc_b,
             config,
         }
     }
@@ -93,99 +115,51 @@ impl CpuNetwork {
     ) -> (f32, Vec<usize>) {
         debug_assert_eq!(input.rank(), 4);
         debug_assert_eq!(input.shape[0], targets.len());
+        debug_assert_eq!(input.shape[1], self.config.input_channels);
+        debug_assert_eq!(input.shape[2], self.config.input_height);
+        debug_assert_eq!(input.shape[3], self.config.input_width);
         debug_assert!(targets
             .iter()
             .all(|&target| target < self.config.num_classes));
 
-        let batch_size = input.shape[0];
-        debug_assert_eq!(input.shape[1], self.config.input_channels);
-        debug_assert_eq!(input.shape[2], self.config.input_height);
-        debug_assert_eq!(input.shape[3], self.config.input_width);
-        debug_assert_eq!(
-            input.numel(),
-            batch_size
-                * self.config.input_channels
-                * self.config.input_height
-                * self.config.input_width
-        );
+        self.graph.reset_for_iteration();
 
-        let (x, conv1_cache) = self.conv1.forward(input);
-        let (x, relu1_cache) = self.relu1.forward(&x);
-        let (x, pool1_cache) = self.pool1.forward(&x);
+        let input = self.graph.add_leaf(input.clone(), false);
+        let x = self
+            .graph
+            .conv2d(input, self.conv1_w, self.conv1_b, self.config.conv_padding);
+        let x = self.graph.relu(x);
+        let x = self.graph.maxpool2x2(x);
 
-        if let (Some(conv2), Some(relu2), Some(pool2), Some(conv2_out_channels)) = (
-            self.conv2.as_ref(),
-            self.relu2.as_ref(),
-            self.pool2.as_ref(),
-            self.config.conv2_out_channels,
-        ) {
-            let (x, conv2_cache) = conv2.forward(&x);
-            let (x, relu2_cache) = relu2.forward(&x);
-            let (x, pool2_cache) = pool2.forward(&x);
+        let x = if let (Some(conv2_w), Some(conv2_b)) = (self.conv2_w, self.conv2_b) {
+            let x = self
+                .graph
+                .conv2d(x, conv2_w, conv2_b, self.config.conv_padding);
+            let x = self.graph.relu(x);
+            self.graph.maxpool2x2(x)
+        } else {
+            x
+        };
 
-            let flat = x.reshape(vec![batch_size, self.config.flat_dim()]);
+        let x = self.graph.flatten(x);
+        let logits = self.graph.linear(x, self.fc_w, self.fc_b);
+        let loss = self.graph.softmax_ce(logits, targets);
+        let predictions = self.graph.predictions_for_loss(loss);
+        let loss_value = self.graph.data(loss).data[0];
 
-            let (logits, fc_cache) = self.fc.forward(&flat);
-            let probs = loss::softmax_batch(&logits);
+        self.graph.backward(loss);
+        self.graph.sgd_step(lr);
 
-            let loss = loss::cross_entropy_batch(&probs, targets);
-            let predictions = loss::argmax_batch(&probs);
-            let grad_logits = loss::softmax_ce_grad_batch(&probs, targets);
-
-            let grad_flat = self.fc.backward(&fc_cache, &grad_logits);
-
-            let grad_pool2_in = grad_flat.reshape(vec![
-                batch_size,
-                conv2_out_channels,
-                self.config.pool2_height(),
-                self.config.pool2_width(),
-            ]);
-
-            let grad_relu2_in = pool2.backward(&pool2_cache, &grad_pool2_in);
-            let grad_conv2_in = relu2.backward(&relu2_cache, &grad_relu2_in);
-            let grad_pool1_in = self
-                .conv2
-                .as_mut()
-                .unwrap()
-                .backward(&conv2_cache, &grad_conv2_in);
-            let grad_relu1_in = self.pool1.backward(&pool1_cache, &grad_pool1_in);
-            let grad_conv1_in = self.relu1.backward(&relu1_cache, &grad_relu1_in);
-            let _ = self.conv1.backward(&conv1_cache, &grad_conv1_in);
-
-            let optimizer = optimizer::Sgd::new(lr);
-            optimizer.step(self.conv1.trainable_parameters_mut());
-            optimizer.step(self.conv2.as_mut().unwrap().trainable_parameters_mut());
-            optimizer.step(self.fc.trainable_parameters_mut());
-
-            return (loss, predictions);
-        }
-
-        let flat = x.reshape(vec![batch_size, self.config.flat_dim()]);
-
-        let (logits, fc_cache) = self.fc.forward(&flat);
-        let probs = loss::softmax_batch(&logits);
-
-        let loss = loss::cross_entropy_batch(&probs, targets);
-        let predictions = loss::argmax_batch(&probs);
-        let grad_logits = loss::softmax_ce_grad_batch(&probs, targets);
-
-        let grad_flat = self.fc.backward(&fc_cache, &grad_logits);
-
-        let grad_pool_in = grad_flat.reshape(vec![
-            batch_size,
-            self.config.conv_out_channels,
-            self.config.pool_height(),
-            self.config.pool_width(),
-        ]);
-
-        let grad_relu_in = self.pool1.backward(&pool1_cache, &grad_pool_in);
-        let grad_conv_in = self.relu1.backward(&relu1_cache, &grad_relu_in);
-        let _ = self.conv1.backward(&conv1_cache, &grad_conv_in);
-
-        let optimizer = optimizer::Sgd::new(lr);
-        optimizer.step(self.conv1.trainable_parameters_mut());
-        optimizer.step(self.fc.trainable_parameters_mut());
-
-        (loss, predictions)
+        (loss_value, predictions)
     }
+}
+
+fn add_weight(
+    graph: &mut Graph,
+    shape: Vec<usize>,
+    fan_in: usize,
+    rng: &mut random::Rng,
+) -> NodeId {
+    let scale = (2.0 / fan_in as f32).sqrt();
+    graph.add_leaf(tensor::Tensor::random(shape, rng, scale), true)
 }
