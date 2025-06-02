@@ -49,6 +49,12 @@ pub struct Graph {
     param_count: usize,
 }
 
+impl Default for Graph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Graph {
     pub fn new() -> Self {
         Self {
@@ -278,19 +284,19 @@ impl Graph {
 
         let mut probs = tensor::Tensor::zeros(logits_data.shape.clone());
         let mut total = 0.0;
-        for batch in 0..n {
+        for (batch, target) in targets.iter().copied().enumerate().take(n) {
             let row = &logits_data.data[batch * classes..(batch + 1) * classes];
             let max_val = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let mut sum = 0.0;
-            for class in 0..classes {
-                let value = (row[class] - max_val).exp();
+            for (class, logit) in row.iter().copied().enumerate().take(classes) {
+                let value = (logit - max_val).exp();
                 probs.data[batch * classes + class] = value;
                 sum += value;
             }
             for class in 0..classes {
                 probs.data[batch * classes + class] /= sum;
             }
-            total += -(probs.data[batch * classes + targets[batch]].max(1e-12)).ln();
+            total += -(probs.data[batch * classes + target].max(1e-12)).ln();
         }
 
         let loss = tensor::Tensor::from_data(vec![total / n as f32], vec![1]);

@@ -3,34 +3,93 @@ extern "C" __global__ void conv2d_forward(
     const float* input,
     const float* weights,
     const float* bias,
-    int C_in, int H, int W, int C_out, int K
+    int N,
+    int C_in,
+    int H,
+    int W,
+    int C_out,
+    int K,
+    int pad
 ) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     int i = blockIdx.y * blockDim.y + threadIdx.y;
-    int co = blockIdx.z;
+    int n_co = blockIdx.z;
+    int n = n_co / C_out;
+    int co = n_co - n * C_out;
 
-    int H_out = H - K + 1;
-    int W_out = W - K + 1;
-    if (i >= H_out || j >= W_out || co >= C_out) return;
+    int H_out = H + 2 * pad - K + 1;
+    int W_out = W + 2 * pad - K + 1;
+    if (i >= H_out || j >= W_out || n >= N) return;
 
     float sum = bias[co];
     for (int ci = 0; ci < C_in; ++ci) {
         for (int ki = 0; ki < K; ++ki) {
             for (int kj = 0; kj < K; ++kj) {
-                int in_idx = ci * H * W + (i + ki) * W + (j + kj);
+                int i_in = i + ki - pad;
+                int j_in = j + kj - pad;
+                if (i_in < 0 || i_in >= H || j_in < 0 || j_in >= W) continue;
+
+                int in_idx = ((n * C_in + ci) * H + i_in) * W + j_in;
                 int w_idx = ((co * C_in + ci) * K + ki) * K + kj;
                 sum += input[in_idx] * weights[w_idx];
             }
         }
     }
-    output[co * H_out * W_out + i * W_out + j] = sum;
+
+    output[((n * C_out + co) * H_out + i) * W_out + j] = sum;
+}
+
+extern "C" __global__ void conv2d_backward_input(
+    float* grad_input,
+    const float* grad_output,
+    const float* weights,
+    int N,
+    int C_in,
+    int H,
+    int W,
+    int C_out,
+    int K,
+    int pad
+) {
+    int j_in = blockIdx.x * blockDim.x + threadIdx.x;
+    int i_in = blockIdx.y * blockDim.y + threadIdx.y;
+    int n_ci = blockIdx.z;
+    int n = n_ci / C_in;
+    int ci = n_ci - n * C_in;
+    if (i_in >= H || j_in >= W || n >= N) return;
+
+    int H_out = H + 2 * pad - K + 1;
+    int W_out = W + 2 * pad - K + 1;
+    float sum = 0.0f;
+
+    for (int co = 0; co < C_out; ++co) {
+        for (int ki = 0; ki < K; ++ki) {
+            for (int kj = 0; kj < K; ++kj) {
+                int i_out = i_in - ki + pad;
+                int j_out = j_in - kj + pad;
+                if (i_out < 0 || i_out >= H_out || j_out < 0 || j_out >= W_out) continue;
+
+                int g_idx = ((n * C_out + co) * H_out + i_out) * W_out + j_out;
+                int w_idx = ((co * C_in + ci) * K + ki) * K + kj;
+                sum += grad_output[g_idx] * weights[w_idx];
+            }
+        }
+    }
+
+    grad_input[((n * C_in + ci) * H + i_in) * W + j_in] = sum;
 }
 
 extern "C" __global__ void conv2d_backward_weight(
     float* grad_weights,
     const float* grad_output,
     const float* input,
-    int C_in, int H, int W, int C_out, int K
+    int N,
+    int C_in,
+    int H,
+    int W,
+    int C_out,
+    int K,
+    int pad
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total = C_out * C_in * K * K;
@@ -43,70 +102,91 @@ extern "C" __global__ void conv2d_backward_weight(
     int ki = rem2 / K;
     int kj = rem2 - ki * K;
 
-    int H_out = H - K + 1;
-    int W_out = W - K + 1;
-
+    int H_out = H + 2 * pad - K + 1;
+    int W_out = W + 2 * pad - K + 1;
     float sum = 0.0f;
-    for (int i = 0; i < H_out; ++i) {
-        for (int j = 0; j < W_out; ++j) {
-            int g_idx = co * H_out * W_out + i * W_out + j;
-            int in_idx = ci * H * W + (i + ki) * W + (j + kj);
-            sum += grad_output[g_idx] * input[in_idx];
+
+    for (int n = 0; n < N; ++n) {
+        for (int i = 0; i < H_out; ++i) {
+            for (int j = 0; j < W_out; ++j) {
+                int i_in = i + ki - pad;
+                int j_in = j + kj - pad;
+                if (i_in < 0 || i_in >= H || j_in < 0 || j_in >= W) continue;
+
+                int g_idx = ((n * C_out + co) * H_out + i) * W_out + j;
+                int in_idx = ((n * C_in + ci) * H + i_in) * W + j_in;
+                sum += grad_output[g_idx] * input[in_idx];
+            }
         }
     }
+
     grad_weights[idx] = sum;
 }
 
 extern "C" __global__ void conv2d_backward_bias(
     float* grad_bias,
     const float* grad_output,
-    int C_out, int H_out, int W_out
+    int N,
+    int C_out,
+    int H_out,
+    int W_out
 ) {
     int co = blockIdx.x * blockDim.x + threadIdx.x;
     if (co >= C_out) return;
 
+    int spatial = H_out * W_out;
     float sum = 0.0f;
-    int n = H_out * W_out;
-    for (int k = 0; k < n; ++k) {
-        sum += grad_output[co * n + k];
+    for (int n = 0; n < N; ++n) {
+        const float* base = grad_output + (n * C_out + co) * spatial;
+        for (int k = 0; k < spatial; ++k) {
+            sum += base[k];
+        }
     }
+
     grad_bias[co] = sum;
 }
 
-extern "C" __global__ void relu_forward(float* x, int n) {
+extern "C" __global__ void relu_forward(float* output, const float* input, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    if (x[i] < 0.0f) x[i] = 0.0f;
+    output[i] = fmaxf(0.0f, input[i]);
 }
 
-extern "C" __global__ void relu_backward(float* grad, const float* post_act, int n) {
+extern "C" __global__ void relu_backward(
+    float* grad_input,
+    const float* grad_output,
+    const float* post_act,
+    int n
+) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    if (post_act[i] <= 0.0f) grad[i] = 0.0f;
+    grad_input[i] = post_act[i] > 0.0f ? grad_output[i] : 0.0f;
 }
 
 extern "C" __global__ void maxpool2x2_forward(
     float* output,
     int* max_indices,
     const float* input,
-    int C, int H, int W
+    int N,
+    int C,
+    int H,
+    int W
 ) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int n_c = blockIdx.z;
+    int n = n_c / C;
+    int c = n_c - n * C;
+
     int H_out = H / 2;
     int W_out = W / 2;
-    int total = C * H_out * W_out;
-    if (idx >= total) return;
-
-    int ch = idx / (H_out * W_out);
-    int rem = idx - ch * H_out * W_out;
-    int i = rem / W_out;
-    int j = rem - i * W_out;
+    if (i >= H_out || j >= W_out || n >= N) return;
 
     float best_val = -3.4028234663852886e38f;
     int best_idx = 0;
     for (int di = 0; di < 2; ++di) {
         for (int dj = 0; dj < 2; ++dj) {
-            int in_idx = ch * H * W + (2 * i + di) * W + (2 * j + dj);
+            int in_idx = ((n * C + c) * H + 2 * i + di) * W + 2 * j + dj;
             float v = input[in_idx];
             if (v > best_val) {
                 best_val = v;
@@ -115,107 +195,161 @@ extern "C" __global__ void maxpool2x2_forward(
         }
     }
 
-    output[idx] = best_val;
-    max_indices[idx] = best_idx;
+    int out_idx = ((n * C + c) * H_out + i) * W_out + j;
+    output[out_idx] = best_val;
+    max_indices[out_idx] = best_idx;
 }
 
 extern "C" __global__ void maxpool2x2_backward(
     float* grad_input,
     const float* grad_output,
     const int* max_indices,
-    int C, int H, int W
+    int total
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = C * H * W;
     if (idx >= total) return;
-
-    int H_out = H / 2;
-    int W_out = W / 2;
-    int ch = idx / (H * W);
-    int rem = idx - ch * H * W;
-    int i = rem / W;
-    int j = rem - i * W;
-    int out_idx = ch * H_out * W_out + (i / 2) * W_out + (j / 2);
-
-    grad_input[idx] = max_indices[out_idx] == idx ? grad_output[out_idx] : 0.0f;
+    atomicAdd(&grad_input[max_indices[idx]], grad_output[idx]);
 }
 
-extern "C" __global__ void dense_forward(
+extern "C" __global__ void linear_forward(
     float* y,
-    const float* W,
     const float* x,
-    const float* b,
-    int in_dim, int out_dim
+    const float* weights,
+    const float* bias,
+    int N,
+    int in_dim,
+    int out_dim
 ) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= out_dim) return;
-    float sum = b[i];
-    for (int j = 0; j < in_dim; ++j) {
-        sum += W[i * in_dim + j] * x[j];
+    int o = blockIdx.x * blockDim.x + threadIdx.x;
+    int n = blockIdx.y;
+    if (o >= out_dim || n >= N) return;
+
+    float sum = bias[o];
+    for (int i = 0; i < in_dim; ++i) {
+        sum += weights[o * in_dim + i] * x[n * in_dim + i];
     }
-    y[i] = sum;
+
+    y[n * out_dim + o] = sum;
 }
 
-extern "C" __global__ void dense_backward_input(
+extern "C" __global__ void linear_backward_input(
     float* dx,
-    const float* W,
     const float* dy,
-    int in_dim, int out_dim
+    const float* weights,
+    int N,
+    int in_dim,
+    int out_dim
 ) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j >= in_dim) return;
+    int n = blockIdx.y;
+    if (j >= in_dim || n >= N) return;
+
     float sum = 0.0f;
-    for (int i = 0; i < out_dim; ++i) {
-        sum += W[i * in_dim + j] * dy[i];
+    for (int o = 0; o < out_dim; ++o) {
+        sum += dy[n * out_dim + o] * weights[o * in_dim + j];
     }
-    dx[j] = sum;
+
+    dx[n * in_dim + j] = sum;
 }
 
-extern "C" __global__ void dense_backward_weight(
+extern "C" __global__ void linear_backward_weight(
     float* dW,
-    float* db,
     const float* dy,
     const float* x,
-    int in_dim, int out_dim
+    int N,
+    int in_dim,
+    int out_dim
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = in_dim * out_dim;
+    int total = out_dim * in_dim;
     if (idx >= total) return;
 
-    int i = idx / in_dim;
-    int j = idx - i * in_dim;
-    dW[idx] = dy[i] * x[j];
-    if (j == 0) db[i] = dy[i];
+    int o = idx / in_dim;
+    int j = idx - o * in_dim;
+    float sum = 0.0f;
+    for (int n = 0; n < N; ++n) {
+        sum += dy[n * out_dim + o] * x[n * in_dim + j];
+    }
+
+    dW[idx] = sum;
 }
 
-extern "C" __global__ void softmax_and_grad(
-    float* probs,
-    float* grad,
-    const float* logits,
-    int target,
-    int n
+extern "C" __global__ void linear_backward_bias(
+    float* db,
+    const float* dy,
+    int N,
+    int out_dim
 ) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int o = blockIdx.x * blockDim.x + threadIdx.x;
+    if (o >= out_dim) return;
 
-    float mx = logits[0];
-    for (int i = 1; i < n; ++i) {
-        if (logits[i] > mx) mx = logits[i];
-    }
     float sum = 0.0f;
-    for (int i = 0; i < n; ++i) {
-        float e = __expf(logits[i] - mx);
-        probs[i] = e;
+    for (int n = 0; n < N; ++n) {
+        sum += dy[n * out_dim + o];
+    }
+
+    db[o] = sum;
+}
+
+extern "C" __global__ void softmax_ce_forward(
+    float* probs,
+    float* loss_per_sample,
+    const float* logits,
+    const int* targets,
+    int N,
+    int C
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+
+    const float* row_logits = logits + n * C;
+    float* row_probs = probs + n * C;
+    float mx = row_logits[0];
+    for (int c = 1; c < C; ++c) {
+        if (row_logits[c] > mx) mx = row_logits[c];
+    }
+
+    float sum = 0.0f;
+    for (int c = 0; c < C; ++c) {
+        float e = __expf(row_logits[c] - mx);
+        row_probs[c] = e;
         sum += e;
     }
+
     float inv = 1.0f / sum;
-    for (int i = 0; i < n; ++i) {
-        probs[i] *= inv;
-        grad[i] = probs[i] - (i == target ? 1.0f : 0.0f);
+    int target = targets[n];
+    for (int c = 0; c < C; ++c) {
+        row_probs[c] *= inv;
     }
+
+    loss_per_sample[n] = -__logf(row_probs[target] + 1e-12f);
+}
+
+extern "C" __global__ void softmax_ce_backward(
+    float* grad_logits,
+    const float* probs,
+    const int* targets,
+    int N,
+    int C
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C;
+    if (idx >= total) return;
+
+    int n = idx / C;
+    int c = idx - n * C;
+    float one_hot = c == targets[n] ? 1.0f : 0.0f;
+    grad_logits[idx] = (probs[idx] - one_hot) / (float)N;
 }
 
 extern "C" __global__ void sgd_update(float* param, const float* grad, float lr, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     param[i] -= lr * grad[i];
+}
+
+extern "C" __global__ void zero_buffer(float* buffer, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    buffer[i] = 0.0f;
 }
