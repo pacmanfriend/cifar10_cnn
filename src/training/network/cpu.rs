@@ -107,7 +107,7 @@ impl CpuNetwork {
         (loss, predictions[0])
     }
 
-    fn train_step_batch_with_predictions(
+    pub(super) fn train_step_batch_with_predictions(
         &mut self,
         input: &tensor::Tensor,
         targets: &[usize],

@@ -94,27 +94,12 @@ pub fn train_demo(
 
         let indices: Vec<usize> = (0..dataset_len).collect();
 
-        match backend {
-            network::Backend::Cpu => {
-                for start in (0..dataset_len).step_by(options.batch_size) {
-                    let (input, targets) =
-                        make_batch(&dataset, &indices, start, options.batch_size);
-                    let (loss, batch_correct) =
-                        net.train_step_batch(&input, &targets, options.learning_rate)?;
-                    total_loss += loss * targets.len() as f32;
-                    correct += batch_correct;
-                }
-            }
-            network::Backend::Gpu => {
-                for (input, target) in dataset.iter() {
-                    let (loss, predicted) =
-                        net.train_step(input, *target, options.learning_rate)?;
-                    total_loss += loss;
-                    if predicted == *target {
-                        correct += 1;
-                    }
-                }
-            }
+        for start in (0..dataset_len).step_by(options.batch_size) {
+            let (input, targets) = make_batch(&dataset, &indices, start, options.batch_size);
+            let (loss, batch_correct) =
+                net.train_step_batch(&input, &targets, options.learning_rate)?;
+            total_loss += loss * targets.len() as f32;
+            correct += batch_correct;
         }
 
         metrics.push(EpochMetrics {

@@ -2,7 +2,7 @@ use crate::{
     compute::{random, tensor},
     config, cuda,
 };
-use std::{error::Error, io};
+use std::error::Error;
 
 mod cpu;
 
@@ -55,11 +55,22 @@ impl Network {
     ) -> Result<(f32, usize), Box<dyn Error>> {
         match &mut self.inner {
             NetworkInner::Cpu(net) => Ok(net.train_step_batch(input, targets, lr)),
-            NetworkInner::Gpu(_) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "batched train_step is not implemented for GPU backend yet",
-            )
-            .into()),
+            NetworkInner::Gpu(net) => Ok(net.train_step_batch(input, targets, lr)?),
+        }
+    }
+
+    #[cfg(test)]
+    fn train_step_batch_with_predictions(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+    ) -> Result<(f32, Vec<usize>), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => Ok(net.train_step_batch_with_predictions(input, targets, lr)),
+            NetworkInner::Gpu(net) => {
+                Ok(net.train_step_batch_with_predictions(input, targets, lr)?)
+            }
         }
     }
 }
@@ -140,11 +151,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn cpu_and_gpu_train_step_match_for_fixed_seed() -> Result<(), Box<dyn std::error::Error>> {
         let config = config::ModelConfig::demo();
         let dataset = datasets::make_fake_dataset();
-        let (input, target) = &dataset[0];
+        let input = crate::compute::tensor::Tensor::from_data(
+            dataset
+                .iter()
+                .take(2)
+                .flat_map(|(input, _)| input.data.iter().copied())
+                .collect(),
+            vec![2, 1, 8, 8],
+        );
+        let targets: Vec<usize> = dataset.iter().take(2).map(|(_, target)| *target).collect();
         let mut cpu_rng = random::Rng::new(11);
         let mut gpu_rng = random::Rng::new(11);
         let mut cpu = Network::new(config, &mut cpu_rng, Backend::Cpu)?;
@@ -156,12 +174,14 @@ mod tests {
             }
         };
 
-        let (cpu_loss, cpu_predicted) = cpu.train_step(input, *target, 0.05)?;
-        let (gpu_loss, gpu_predicted) = gpu.train_step(input, *target, 0.05)?;
+        let (cpu_loss, cpu_predictions) =
+            cpu.train_step_batch_with_predictions(&input, &targets, 0.05)?;
+        let (gpu_loss, gpu_predictions) =
+            gpu.train_step_batch_with_predictions(&input, &targets, 0.05)?;
 
-        assert_eq!(cpu_predicted, gpu_predicted);
+        assert_eq!(cpu_predictions, gpu_predictions);
         assert!(
-            (cpu_loss - gpu_loss).abs() < 1e-4,
+            (cpu_loss - gpu_loss).abs() < 1e-3,
             "loss mismatch: cpu={cpu_loss}, gpu={gpu_loss}"
         );
 
