@@ -2,6 +2,7 @@ use crate::{
     compute::{random, tensor},
     config,
     training::graph::{Graph, NodeId},
+    training::loss,
 };
 
 pub(super) struct CpuNetwork {
@@ -107,6 +108,12 @@ impl CpuNetwork {
         (loss, predictions[0])
     }
 
+    pub(super) fn predict_batch(&mut self, input: &tensor::Tensor) -> Vec<usize> {
+        let logits = self.forward_logits(input);
+        let probs = loss::softmax_batch(&logits);
+        loss::argmax_batch(&probs)
+    }
+
     pub(super) fn train_step_batch_with_predictions(
         &mut self,
         input: &tensor::Tensor,
@@ -121,6 +128,30 @@ impl CpuNetwork {
         debug_assert!(targets
             .iter()
             .all(|&target| target < self.config.num_classes));
+
+        self.graph.reset_for_iteration();
+
+        let logits = self.forward_logits_node(input);
+        let loss = self.graph.softmax_ce(logits, targets);
+        let predictions = self.graph.predictions_for_loss(loss);
+        let loss_value = self.graph.data(loss).data[0];
+
+        self.graph.backward(loss);
+        self.graph.sgd_step(lr);
+
+        (loss_value, predictions)
+    }
+
+    fn forward_logits(&mut self, input: &tensor::Tensor) -> tensor::Tensor {
+        let logits = self.forward_logits_node(input);
+        self.graph.data(logits).clone()
+    }
+
+    fn forward_logits_node(&mut self, input: &tensor::Tensor) -> NodeId {
+        debug_assert_eq!(input.rank(), 4);
+        debug_assert_eq!(input.shape[1], self.config.input_channels);
+        debug_assert_eq!(input.shape[2], self.config.input_height);
+        debug_assert_eq!(input.shape[3], self.config.input_width);
 
         self.graph.reset_for_iteration();
 
@@ -142,15 +173,7 @@ impl CpuNetwork {
         };
 
         let x = self.graph.flatten(x);
-        let logits = self.graph.linear(x, self.fc_w, self.fc_b);
-        let loss = self.graph.softmax_ce(logits, targets);
-        let predictions = self.graph.predictions_for_loss(loss);
-        let loss_value = self.graph.data(loss).data[0];
-
-        self.graph.backward(loss);
-        self.graph.sgd_step(lr);
-
-        (loss_value, predictions)
+        self.graph.linear(x, self.fc_w, self.fc_b)
     }
 }
 

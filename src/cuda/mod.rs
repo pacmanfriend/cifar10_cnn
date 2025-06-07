@@ -154,6 +154,155 @@ impl CudaNetwork {
         Ok((loss, correct))
     }
 
+    pub fn predict_batch(&mut self, input: &tensor::Tensor) -> Result<Vec<usize>, DriverError> {
+        debug_assert_eq!(input.rank(), 4);
+        debug_assert_eq!(input.shape[1], self.config.input_channels);
+        debug_assert_eq!(input.shape[2], self.config.input_height);
+        debug_assert_eq!(input.shape[3], self.config.input_width);
+
+        let batch_size = input.shape[0];
+        let input_dev = self.stream.memcpy_stod(&input.data)?;
+
+        let conv1 = ConvShape {
+            n: batch_size,
+            c_in: self.config.input_channels,
+            h: self.config.input_height,
+            w: self.config.input_width,
+            c_out: self.config.conv_out_channels,
+            h_out: self.config.conv1_height(),
+            w_out: self.config.conv1_width(),
+            kernel: self.config.conv_kernel,
+            padding: self.config.conv_padding,
+        };
+        let mut conv1_out = self.stream.alloc_zeros::<f32>(conv1.output_len())?;
+        let mut relu1_out = self.stream.alloc_zeros::<f32>(conv1.output_len())?;
+        let pool1_len = batch_size
+            * self.config.conv_out_channels
+            * self.config.pool1_height()
+            * self.config.pool1_width();
+        let mut pool1_out = self.stream.alloc_zeros::<f32>(pool1_len)?;
+        let mut max_indices1 = self.stream.alloc_zeros::<i32>(pool1_len)?;
+
+        launch_conv_forward(
+            &self.stream,
+            &self.kernel("conv2d_forward")?,
+            &mut conv1_out,
+            &input_dev,
+            &self.conv1_w,
+            &self.conv1_b,
+            conv1,
+        )?;
+        launch_relu_forward(
+            &self.stream,
+            &self.kernel("relu_forward")?,
+            &mut relu1_out,
+            &conv1_out,
+            conv1.output_len(),
+        )?;
+        launch_maxpool_forward(
+            &self.stream,
+            &self.kernel("maxpool2x2_forward")?,
+            &mut pool1_out,
+            &mut max_indices1,
+            &relu1_out,
+            batch_size,
+            self.config.conv_out_channels,
+            self.config.conv1_height(),
+            self.config.conv1_width(),
+        )?;
+
+        let linear_input = if let (Some(conv2_w), Some(conv2_b)) =
+            (self.conv2_w.as_ref(), self.conv2_b.as_ref())
+        {
+            let conv2_out_channels = self.config.conv2_out_channels.unwrap();
+            let conv2 = ConvShape {
+                n: batch_size,
+                c_in: self.config.conv_out_channels,
+                h: self.config.pool1_height(),
+                w: self.config.pool1_width(),
+                c_out: conv2_out_channels,
+                h_out: self.config.conv2_height(),
+                w_out: self.config.conv2_width(),
+                kernel: self.config.conv_kernel,
+                padding: self.config.conv_padding,
+            };
+            let mut conv2_out = self.stream.alloc_zeros::<f32>(conv2.output_len())?;
+            let mut relu2_out = self.stream.alloc_zeros::<f32>(conv2.output_len())?;
+            let pool2_len = batch_size
+                * conv2_out_channels
+                * self.config.pool2_height()
+                * self.config.pool2_width();
+            let mut pool2_out = self.stream.alloc_zeros::<f32>(pool2_len)?;
+            let mut max_indices2 = self.stream.alloc_zeros::<i32>(pool2_len)?;
+
+            launch_conv_forward(
+                &self.stream,
+                &self.kernel("conv2d_forward")?,
+                &mut conv2_out,
+                &pool1_out,
+                conv2_w,
+                conv2_b,
+                conv2,
+            )?;
+            launch_relu_forward(
+                &self.stream,
+                &self.kernel("relu_forward")?,
+                &mut relu2_out,
+                &conv2_out,
+                conv2.output_len(),
+            )?;
+            launch_maxpool_forward(
+                &self.stream,
+                &self.kernel("maxpool2x2_forward")?,
+                &mut pool2_out,
+                &mut max_indices2,
+                &relu2_out,
+                batch_size,
+                conv2_out_channels,
+                self.config.conv2_height(),
+                self.config.conv2_width(),
+            )?;
+            pool2_out
+        } else {
+            pool1_out
+        };
+
+        let mut logits = self
+            .stream
+            .alloc_zeros::<f32>(batch_size * self.config.num_classes)?;
+        let mut probs = self
+            .stream
+            .alloc_zeros::<f32>(batch_size * self.config.num_classes)?;
+        let mut losses = self.stream.alloc_zeros::<f32>(batch_size)?;
+        let dummy_targets = vec![0_i32; batch_size];
+        let targets_dev = self.stream.memcpy_stod(&dummy_targets)?;
+
+        launch_linear_forward(
+            &self.stream,
+            &self.kernel("linear_forward")?,
+            &mut logits,
+            &linear_input,
+            &self.linear_w,
+            &self.linear_b,
+            batch_size,
+            self.config.flat_dim(),
+            self.config.num_classes,
+        )?;
+        launch_softmax_forward(
+            &self.stream,
+            &self.kernel("softmax_ce_forward")?,
+            &mut probs,
+            &mut losses,
+            &logits,
+            &targets_dev,
+            batch_size,
+            self.config.num_classes,
+        )?;
+
+        let probs_host = self.stream.memcpy_dtov(&probs)?;
+        Ok(predictions_from_probs(&probs_host, self.config.num_classes))
+    }
+
     pub fn train_step_batch_with_predictions(
         &mut self,
         input: &tensor::Tensor,
@@ -339,16 +488,7 @@ impl CudaNetwork {
         let losses_host = self.stream.memcpy_dtov(&losses)?;
         let probs_host = self.stream.memcpy_dtov(&probs)?;
         let loss = losses_host.iter().sum::<f32>() / batch_size as f32;
-        let predictions = probs_host
-            .chunks_exact(self.config.num_classes)
-            .map(|row| {
-                row.iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .unwrap()
-                    .0
-            })
-            .collect::<Vec<_>>();
+        let predictions = predictions_from_probs(&probs_host, self.config.num_classes);
 
         launch_linear_backward_input(
             &self.stream,
@@ -559,6 +699,19 @@ fn linear_grid(out_dim: usize, batch_size: usize) -> LaunchConfig {
         block_dim: (256, 1, 1),
         shared_mem_bytes: 0,
     }
+}
+
+fn predictions_from_probs(probs: &[f32], classes: usize) -> Vec<usize> {
+    probs
+        .chunks_exact(classes)
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap()
+                .0
+        })
+        .collect()
 }
 
 fn launch_conv_forward(
