@@ -24,4 +24,9 @@ impl Rng {
         let u2 = self.uniform();
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
     }
+
+    pub fn gen_range(&mut self, upper: usize) -> usize {
+        assert!(upper > 0, "upper bound must be greater than zero");
+        ((self.next() >> 32) as usize) % upper
+    }
 }
