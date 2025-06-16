@@ -1,6 +1,8 @@
 use cifar10_cnn::training::{network, trainer};
 use std::path::PathBuf;
 
+const DEFAULT_CIFAR10_DIR: &str = "data/cifar-10-batches-bin";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args(std::env::args().skip(1))?;
 
@@ -16,7 +18,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (options, history) = if let Some(data_dir) = args.data_dir.as_ref() {
+    let default_data_dir;
+    let data_dir = if let Some(data_dir) = args.data_dir.as_ref() {
+        Some(data_dir)
+    } else if args.cifar10 {
+        default_data_dir = PathBuf::from(DEFAULT_CIFAR10_DIR);
+        Some(&default_data_dir)
+    } else {
+        None
+    };
+
+    let (options, history) = if let Some(data_dir) = data_dir {
         let mut options = trainer::TrainOptions::cifar10();
         apply_overrides(&mut options, &args);
         println!("Dataset: CIFAR-10 at {}", data_dir.display());
@@ -61,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Args {
     backend: String,
     data_dir: Option<PathBuf>,
+    cifar10: bool,
     epochs: Option<usize>,
     learning_rate: Option<f32>,
     batch_size: Option<usize>,
@@ -70,6 +83,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
     let mut parsed = Args {
         backend: args.next().unwrap_or_else(|| "cpu".to_string()),
         data_dir: None,
+        cifar10: false,
         epochs: None,
         learning_rate: None,
         batch_size: None,
@@ -82,6 +96,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
                     .next()
                     .ok_or_else(|| "--data requires a path argument".to_string())?;
                 parsed.data_dir = Some(PathBuf::from(value));
+            }
+            "--cifar" | "--cifar10" => {
+                parsed.cifar10 = true;
             }
             "--epochs" => {
                 let value = args
