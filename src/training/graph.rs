@@ -589,4 +589,87 @@ mod tests {
 
         assert_eq!(graph.data(output).shape, vec![1, 1, 3, 3]);
     }
+
+    #[test]
+    fn reset_keeps_parameters_and_drops_activations() {
+        let mut graph = Graph::new();
+        let weights = graph.add_leaf(Tensor::from_data(vec![1.0, 2.0], vec![1, 2]), true);
+        let bias = graph.add_leaf(Tensor::zeros(vec![1]), true);
+        graph.finalize_params();
+
+        let input = graph.add_leaf(Tensor::from_data(vec![3.0, 4.0], vec![1, 2]), false);
+        let output = graph.linear(input, weights, bias);
+
+        assert!(graph.nodes.len() > graph.param_count);
+        assert_eq!(graph.data(output).shape, vec![1, 1]);
+
+        graph.nodes[weights].grad = Some(Tensor::from_data(vec![1.0, 1.0], vec![1, 2]));
+        graph.reset_for_iteration();
+
+        assert_eq!(graph.nodes.len(), graph.param_count);
+        assert_eq!(graph.nodes[weights].data.data, vec![1.0, 2.0]);
+        assert!(graph.nodes[weights].grad.is_none());
+        assert!(graph.nodes[bias].grad.is_none());
+    }
+
+    #[test]
+    fn accumulate_grad_adds_multiple_contributions() {
+        let mut graph = Graph::new();
+        let input = graph.add_leaf(Tensor::zeros(vec![2]), false);
+
+        graph.add_grad(input, Tensor::from_data(vec![1.0, 2.0], vec![2]));
+        graph.add_grad(input, Tensor::from_data(vec![3.0, 4.0], vec![2]));
+
+        assert_eq!(
+            graph.nodes[input].grad.as_ref().unwrap().data,
+            vec![4.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn backward_covers_conv_relu_pool_flatten_linear_chain() {
+        let mut graph = Graph::new();
+        let conv_w = graph.add_leaf(Tensor::from_data(vec![0.1; 9], vec![1, 1, 3, 3]), true);
+        let conv_b = graph.add_leaf(Tensor::zeros(vec![1]), true);
+        let linear_w = graph.add_leaf(
+            Tensor::from_data(vec![0.1, -0.2, 0.3, -0.4, -0.1, 0.2, -0.3, 0.4], vec![2, 4]),
+            true,
+        );
+        let linear_b = graph.add_leaf(Tensor::zeros(vec![2]), true);
+        graph.finalize_params();
+        graph.reset_for_iteration();
+
+        let input = graph.add_leaf(
+            Tensor::from_data(
+                vec![
+                    1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 1.5, -1.5, 2.0, 1.0, -1.0, -2.0, 0.0, 0.25,
+                    -0.25, 0.75,
+                ],
+                vec![1, 1, 4, 4],
+            ),
+            false,
+        );
+        let x = graph.conv2d(input, conv_w, conv_b, 1);
+        let x = graph.relu(x);
+        let x = graph.maxpool2x2(x);
+        let x = graph.flatten(x);
+        let logits = graph.linear(x, linear_w, linear_b);
+        let loss = graph.softmax_ce(logits, &[1]);
+        let before = graph.data(conv_w).data.clone();
+
+        graph.backward(loss);
+        graph.sgd_step(0.01);
+
+        for id in [input, conv_w, conv_b, linear_w, linear_b] {
+            let grad = graph.nodes[id]
+                .grad
+                .as_ref()
+                .expect("node must receive a backward gradient");
+            assert!(
+                grad.data.iter().all(|value| value.is_finite()),
+                "non-finite gradient for node {id}"
+            );
+        }
+        assert_ne!(graph.data(conv_w).data, before);
+    }
 }

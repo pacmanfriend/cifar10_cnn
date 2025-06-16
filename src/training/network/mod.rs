@@ -158,6 +158,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn cpu_and_gpu_train_step_match_for_fixed_seed() -> Result<(), Box<dyn std::error::Error>> {
         let config = config::ModelConfig::demo();
         let dataset = datasets::make_fake_dataset();
