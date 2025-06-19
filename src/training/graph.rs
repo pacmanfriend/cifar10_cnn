@@ -47,6 +47,7 @@ pub struct Graph {
     nodes: Vec<Node>,
     parameters: Vec<NodeId>,
     param_count: usize,
+    velocities: Vec<Option<tensor::Tensor>>,
 }
 
 impl Default for Graph {
@@ -61,6 +62,7 @@ impl Graph {
             nodes: Vec::new(),
             parameters: Vec::new(),
             param_count: 0,
+            velocities: Vec::new(),
         }
     }
 
@@ -77,9 +79,15 @@ impl Graph {
 
     pub fn add_leaf(&mut self, data: tensor::Tensor, is_param: bool) -> NodeId {
         let id = self.nodes.len();
+        let velocity = if is_param {
+            Some(tensor::Tensor::zeros(data.shape.clone()))
+        } else {
+            None
+        };
         if is_param {
             self.parameters.push(id);
         }
+        self.velocities.push(velocity);
         let shape = data.shape.clone();
         self.nodes.push(Node {
             data,
@@ -344,12 +352,27 @@ impl Graph {
     }
 
     pub fn sgd_step(&mut self, lr: f32) {
+        self.momentum_sgd_step(lr, 0.0);
+    }
+
+    pub fn momentum_sgd_step(&mut self, lr: f32, momentum: f32) {
+        debug_assert!((0.0..1.0).contains(&momentum) || momentum == 1.0);
         for id in self.parameters.iter().copied() {
             if let Some(grad) = self.nodes[id].grad.clone() {
                 let param = &mut self.nodes[id].data;
                 debug_assert_eq!(param.shape, grad.shape);
-                for (value, grad) in param.data.iter_mut().zip(grad.data.iter()) {
-                    *value -= lr * grad;
+                let velocity = self.velocities[id]
+                    .as_mut()
+                    .expect("parameter must have optimizer velocity");
+                debug_assert_eq!(velocity.shape, grad.shape);
+                for ((value, velocity), grad) in param
+                    .data
+                    .iter_mut()
+                    .zip(velocity.data.iter_mut())
+                    .zip(grad.data.iter())
+                {
+                    *velocity = momentum * *velocity + grad;
+                    *value -= lr * *velocity;
                 }
             }
         }
@@ -364,6 +387,7 @@ impl Graph {
     ) -> NodeId {
         let id = self.nodes.len();
         let shape = data.shape.clone();
+        self.velocities.push(None);
         self.nodes.push(Node {
             data,
             shape,
@@ -574,6 +598,23 @@ mod tests {
 
         assert!(graph.data(loss).data[0].is_finite());
         assert_ne!(graph.data(weights).data, before);
+    }
+
+    #[test]
+    fn momentum_sgd_keeps_velocity_between_iterations() {
+        let mut graph = Graph::new();
+        let weights = graph.add_leaf(Tensor::from_data(vec![1.0], vec![1]), true);
+        graph.finalize_params();
+
+        graph.add_grad(weights, Tensor::from_data(vec![0.5], vec![1]));
+        graph.momentum_sgd_step(0.1, 0.9);
+        assert!((graph.data(weights).data[0] - 0.95).abs() < 1e-6);
+
+        graph.reset_for_iteration();
+        graph.add_grad(weights, Tensor::from_data(vec![0.5], vec![1]));
+        graph.momentum_sgd_step(0.1, 0.9);
+
+        assert!((graph.data(weights).data[0] - 0.855).abs() < 1e-6);
     }
 
     #[test]
