@@ -6,6 +6,7 @@ pub struct TrainOptions {
     pub epochs: usize,
     pub learning_rate: f32,
     pub batch_size: usize,
+    pub momentum: f32,
     pub seed: u64,
 }
 
@@ -15,6 +16,7 @@ impl TrainOptions {
             epochs: 50,
             learning_rate: 0.05,
             batch_size: 1,
+            momentum: 0.0,
             seed: 42,
         }
     }
@@ -22,8 +24,9 @@ impl TrainOptions {
     pub const fn cifar10() -> Self {
         Self {
             epochs: 10,
-            learning_rate: 0.01,
+            learning_rate: 0.003,
             batch_size: 64,
+            momentum: 0.9,
             seed: 42,
         }
     }
@@ -133,6 +136,10 @@ fn train_dataset(
         options.batch_size > 0,
         "batch_size must be greater than zero"
     );
+    assert!(
+        (0.0..=1.0).contains(&options.momentum),
+        "momentum must be in the range [0, 1]"
+    );
 
     let mut rng = random::Rng::new(options.seed);
     let mut net = network::Network::new(config, &mut rng, backend)?;
@@ -151,8 +158,12 @@ fn train_dataset(
 
         for start in (0..train_len).step_by(options.batch_size) {
             let (input, targets) = make_batch(&train, &indices, start, options.batch_size);
-            let (loss, batch_correct) =
-                net.train_step_batch(&input, &targets, options.learning_rate)?;
+            let (loss, batch_correct) = net.train_step_batch_with_momentum(
+                &input,
+                &targets,
+                options.learning_rate,
+                options.momentum,
+            )?;
             total_loss += loss * targets.len() as f32;
             correct += batch_correct;
         }
@@ -207,7 +218,7 @@ fn evaluate(
 
 #[cfg(test)]
 mod tests {
-    use super::{make_batch, shuffle_indices, train_demo};
+    use super::{make_batch, shuffle_indices, train_demo, TrainOptions};
     use crate::{compute::random, data::datasets, training::network};
 
     #[test]
@@ -235,6 +246,15 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(first, (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cifar10_options_enable_momentum_sgd() {
+        let options = TrainOptions::cifar10();
+
+        assert_eq!(options.learning_rate, 0.003);
+        assert_eq!(options.momentum, 0.9);
+        assert_eq!(options.batch_size, 64);
     }
 
     #[test]

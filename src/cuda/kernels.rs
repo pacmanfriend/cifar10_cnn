@@ -1,4 +1,4 @@
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 17] = [
     "conv2d_forward",
     "conv2d_backward_input",
     "conv2d_backward_weight",
@@ -14,6 +14,7 @@ pub const NAMES: [&str; 16] = [
     "softmax_ce_forward",
     "softmax_ce_backward",
     "sgd_update",
+    "momentum_sgd_update",
     "zero_buffer",
 ];
 

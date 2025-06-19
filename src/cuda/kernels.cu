@@ -348,6 +348,20 @@ extern "C" __global__ void sgd_update(float* param, const float* grad, float lr,
     param[i] -= lr * grad[i];
 }
 
+extern "C" __global__ void momentum_sgd_update(
+    float* param,
+    const float* grad,
+    float* velocity,
+    float lr,
+    float momentum,
+    int n
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    velocity[i] = momentum * velocity[i] + grad[i];
+    param[i] -= lr * velocity[i];
+}
+
 extern "C" __global__ void zero_buffer(float* buffer, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;

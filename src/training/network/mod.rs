@@ -59,6 +59,30 @@ impl Network {
         }
     }
 
+    pub fn train_step_batch_with_momentum(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+        momentum: f32,
+    ) -> Result<(f32, usize), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => {
+                let (loss, predictions) =
+                    net.train_step_batch_with_momentum(input, targets, lr, momentum);
+                let correct = predictions
+                    .iter()
+                    .zip(targets.iter())
+                    .filter(|(predicted, target)| predicted == target)
+                    .count();
+                Ok((loss, correct))
+            }
+            NetworkInner::Gpu(net) => {
+                Ok(net.train_step_batch_with_momentum(input, targets, lr, momentum)?)
+            }
+        }
+    }
+
     pub fn predict_batch(&mut self, input: &tensor::Tensor) -> Result<Vec<usize>, Box<dyn Error>> {
         match &mut self.inner {
             NetworkInner::Cpu(net) => Ok(net.predict_batch(input)),

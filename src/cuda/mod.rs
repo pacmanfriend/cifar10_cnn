@@ -27,6 +27,12 @@ pub struct CudaNetwork {
     grad_conv2_b: Option<CudaSlice<f32>>,
     grad_linear_w: CudaSlice<f32>,
     grad_linear_b: CudaSlice<f32>,
+    velocity_conv1_w: CudaSlice<f32>,
+    velocity_conv1_b: CudaSlice<f32>,
+    velocity_conv2_w: Option<CudaSlice<f32>>,
+    velocity_conv2_b: Option<CudaSlice<f32>>,
+    velocity_linear_w: CudaSlice<f32>,
+    velocity_linear_b: CudaSlice<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -73,19 +79,23 @@ impl CudaNetwork {
         let conv1_w_host = init_weight(config.conv1_weight_len(), config.input_channels, rng);
         let conv1_b_host = vec![0.0_f32; config.conv_out_channels];
 
-        let (conv2_w, conv2_b, grad_conv2_w, grad_conv2_b) = match config.conv2_out_channels {
-            Some(out_channels) => {
-                let weights = init_weight(config.conv2_weight_len(), config.conv_out_channels, rng);
-                let bias = vec![0.0_f32; out_channels];
-                (
-                    Some(stream.memcpy_stod(&weights)?),
-                    Some(stream.memcpy_stod(&bias)?),
-                    Some(stream.alloc_zeros::<f32>(config.conv2_weight_len())?),
-                    Some(stream.alloc_zeros::<f32>(out_channels)?),
-                )
-            }
-            None => (None, None, None, None),
-        };
+        let (conv2_w, conv2_b, grad_conv2_w, grad_conv2_b, velocity_conv2_w, velocity_conv2_b) =
+            match config.conv2_out_channels {
+                Some(out_channels) => {
+                    let weights =
+                        init_weight(config.conv2_weight_len(), config.conv_out_channels, rng);
+                    let bias = vec![0.0_f32; out_channels];
+                    (
+                        Some(stream.memcpy_stod(&weights)?),
+                        Some(stream.memcpy_stod(&bias)?),
+                        Some(stream.alloc_zeros::<f32>(config.conv2_weight_len())?),
+                        Some(stream.alloc_zeros::<f32>(out_channels)?),
+                        Some(stream.alloc_zeros::<f32>(config.conv2_weight_len())?),
+                        Some(stream.alloc_zeros::<f32>(out_channels)?),
+                    )
+                }
+                None => (None, None, None, None, None, None),
+            };
 
         let linear_w_host = init_weight(
             config.num_classes * config.flat_dim(),
@@ -110,6 +120,12 @@ impl CudaNetwork {
             grad_conv2_b,
             grad_linear_w: stream.alloc_zeros::<f32>(config.num_classes * config.flat_dim())?,
             grad_linear_b: stream.alloc_zeros::<f32>(config.num_classes)?,
+            velocity_conv1_w: stream.alloc_zeros::<f32>(config.conv1_weight_len())?,
+            velocity_conv1_b: stream.alloc_zeros::<f32>(config.conv_out_channels)?,
+            velocity_conv2_w,
+            velocity_conv2_b,
+            velocity_linear_w: stream.alloc_zeros::<f32>(config.num_classes * config.flat_dim())?,
+            velocity_linear_b: stream.alloc_zeros::<f32>(config.num_classes)?,
         })
     }
 
@@ -144,7 +160,18 @@ impl CudaNetwork {
         targets: &[usize],
         lr: f32,
     ) -> Result<(f32, usize), DriverError> {
-        let (loss, predictions) = self.train_step_batch_with_predictions(input, targets, lr)?;
+        self.train_step_batch_with_momentum(input, targets, lr, 0.0)
+    }
+
+    pub fn train_step_batch_with_momentum(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+        momentum: f32,
+    ) -> Result<(f32, usize), DriverError> {
+        let (loss, predictions) =
+            self.train_step_batch_with_predictions_and_momentum(input, targets, lr, momentum)?;
         let correct = predictions
             .iter()
             .zip(targets.iter())
@@ -308,6 +335,16 @@ impl CudaNetwork {
         input: &tensor::Tensor,
         targets: &[usize],
         lr: f32,
+    ) -> Result<(f32, Vec<usize>), DriverError> {
+        self.train_step_batch_with_predictions_and_momentum(input, targets, lr, 0.0)
+    }
+
+    fn train_step_batch_with_predictions_and_momentum(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+        momentum: f32,
     ) -> Result<(f32, Vec<usize>), DriverError> {
         debug_assert_eq!(input.rank(), 4);
         debug_assert_eq!(input.shape[0], targets.len());
@@ -615,19 +652,21 @@ impl CudaNetwork {
             conv1,
         )?;
 
-        self.launch_sgd_all(lr)?;
+        self.launch_sgd_all(lr, momentum)?;
 
         Ok((loss, predictions))
     }
 
-    fn launch_sgd_all(&mut self, lr: f32) -> Result<(), DriverError> {
-        let sgd = self.kernel("sgd_update")?;
+    fn launch_sgd_all(&mut self, lr: f32, momentum: f32) -> Result<(), DriverError> {
+        let sgd = self.kernel("momentum_sgd_update")?;
         launch_sgd(
             &self.stream,
             &sgd,
             &mut self.conv1_w,
             &self.grad_conv1_w,
+            &mut self.velocity_conv1_w,
             lr,
+            momentum,
             self.config.conv1_weight_len(),
         )?;
         launch_sgd(
@@ -635,34 +674,52 @@ impl CudaNetwork {
             &sgd,
             &mut self.conv1_b,
             &self.grad_conv1_b,
+            &mut self.velocity_conv1_b,
             lr,
+            momentum,
             self.config.conv_out_channels,
         )?;
-        if let (Some(conv2_w), Some(grad_conv2_w)) =
-            (self.conv2_w.as_mut(), self.grad_conv2_w.as_ref())
-        {
+        if let (Some(conv2_w), Some(grad_conv2_w), Some(velocity_conv2_w)) = (
+            self.conv2_w.as_mut(),
+            self.grad_conv2_w.as_ref(),
+            self.velocity_conv2_w.as_mut(),
+        ) {
             launch_sgd(
                 &self.stream,
                 &sgd,
                 conv2_w,
                 grad_conv2_w,
+                velocity_conv2_w,
                 lr,
+                momentum,
                 self.config.conv2_weight_len(),
             )?;
         }
-        if let (Some(conv2_b), Some(grad_conv2_b), Some(out_channels)) = (
+        if let (Some(conv2_b), Some(grad_conv2_b), Some(velocity_conv2_b), Some(out_channels)) = (
             self.conv2_b.as_mut(),
             self.grad_conv2_b.as_ref(),
+            self.velocity_conv2_b.as_mut(),
             self.config.conv2_out_channels,
         ) {
-            launch_sgd(&self.stream, &sgd, conv2_b, grad_conv2_b, lr, out_channels)?;
+            launch_sgd(
+                &self.stream,
+                &sgd,
+                conv2_b,
+                grad_conv2_b,
+                velocity_conv2_b,
+                lr,
+                momentum,
+                out_channels,
+            )?;
         }
         launch_sgd(
             &self.stream,
             &sgd,
             &mut self.linear_w,
             &self.grad_linear_w,
+            &mut self.velocity_linear_w,
             lr,
+            momentum,
             self.config.num_classes * self.config.flat_dim(),
         )?;
         launch_sgd(
@@ -670,7 +727,9 @@ impl CudaNetwork {
             &sgd,
             &mut self.linear_b,
             &self.grad_linear_b,
+            &mut self.velocity_linear_b,
             lr,
+            momentum,
             self.config.num_classes,
         )
     }
@@ -1069,19 +1128,24 @@ fn launch_zero(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn launch_sgd(
     stream: &CudaStream,
     kernel: &CudaFunction,
     param: &mut CudaSlice<f32>,
     grad: &CudaSlice<f32>,
+    velocity: &mut CudaSlice<f32>,
     lr: f32,
+    momentum: f32,
     len: usize,
 ) -> Result<(), DriverError> {
     let len = len as i32;
     let mut args = stream.launch_builder(kernel);
     args.arg(param);
     args.arg(grad);
+    args.arg(velocity);
     args.arg(&lr);
+    args.arg(&momentum);
     args.arg(&len);
     unsafe { args.launch(LaunchConfig::for_num_elems(len as u32))? };
     Ok(())

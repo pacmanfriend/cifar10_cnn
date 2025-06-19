@@ -80,7 +80,7 @@ impl CpuNetwork {
         targets: &[usize],
         lr: f32,
     ) -> (f32, usize) {
-        let (loss, predictions) = self.train_step_batch_with_predictions(input, targets, lr);
+        let (loss, predictions) = self.train_step_batch_with_momentum(input, targets, lr, 0.0);
         let correct = predictions
             .iter()
             .zip(targets.iter())
@@ -88,6 +88,16 @@ impl CpuNetwork {
             .count();
 
         (loss, correct)
+    }
+
+    pub(super) fn train_step_batch_with_momentum(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+        momentum: f32,
+    ) -> (f32, Vec<usize>) {
+        self.train_step_batch_with_predictions_and_momentum(input, targets, lr, momentum)
     }
 
     pub(super) fn train_step(
@@ -120,6 +130,16 @@ impl CpuNetwork {
         targets: &[usize],
         lr: f32,
     ) -> (f32, Vec<usize>) {
+        self.train_step_batch_with_predictions_and_momentum(input, targets, lr, 0.0)
+    }
+
+    fn train_step_batch_with_predictions_and_momentum(
+        &mut self,
+        input: &tensor::Tensor,
+        targets: &[usize],
+        lr: f32,
+        momentum: f32,
+    ) -> (f32, Vec<usize>) {
         debug_assert_eq!(input.rank(), 4);
         debug_assert_eq!(input.shape[0], targets.len());
         debug_assert_eq!(input.shape[1], self.config.input_channels);
@@ -137,7 +157,7 @@ impl CpuNetwork {
         let loss_value = self.graph.data(loss).data[0];
 
         self.graph.backward(loss);
-        self.graph.sgd_step(lr);
+        self.graph.momentum_sgd_step(lr, momentum);
 
         (loss_value, predictions)
     }
