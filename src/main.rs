@@ -77,6 +77,7 @@ struct Args {
     epochs: Option<usize>,
     learning_rate: Option<f32>,
     batch_size: Option<usize>,
+    momentum: Option<f32>,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn std::error::Error>> {
@@ -87,6 +88,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
         epochs: None,
         learning_rate: None,
         batch_size: None,
+        momentum: None,
     };
 
     while let Some(arg) = args.next() {
@@ -118,6 +120,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
                     .ok_or_else(|| "--batch-size requires a number".to_string())?;
                 parsed.batch_size = Some(value.parse()?);
             }
+            "--momentum" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--momentum requires a number".to_string())?;
+                parsed.momentum = Some(value.parse()?);
+            }
             _ => return Err(format!("unknown argument '{arg}'").into()),
         }
     }
@@ -134,5 +142,8 @@ fn apply_overrides(options: &mut trainer::TrainOptions, args: &Args) {
     }
     if let Some(batch_size) = args.batch_size {
         options.batch_size = batch_size;
+    }
+    if let Some(momentum) = args.momentum {
+        options.momentum = momentum;
     }
 }
