@@ -1,10 +1,18 @@
-use cifar10_cnn::training::{network, trainer};
+use cifar10_cnn::{
+    api,
+    training::{network, trainer},
+};
 use std::path::PathBuf;
 
 const DEFAULT_CIFAR10_DIR: &str = "data/cifar-10-batches-bin";
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args(std::env::args().skip(1))?;
+
+    if args.serve {
+        return api::serve(args.port).await;
+    }
 
     let backend = match args.backend.as_str() {
         "cpu" => network::Backend::Cpu,
@@ -85,11 +93,26 @@ struct Args {
     lr_decay_factor: Option<f32>,
     batch_size: Option<usize>,
     momentum: Option<f32>,
+    serve: bool,
+    port: u16,
 }
 
-fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn std::error::Error>> {
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, Box<dyn std::error::Error>> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let backend = match args.next() {
+        Some(arg) if arg.starts_with("--") => {
+            args = std::iter::once(arg)
+                .chain(args)
+                .collect::<Vec<_>>()
+                .into_iter();
+            "cpu".to_string()
+        }
+        Some(arg) => arg,
+        None => "cpu".to_string(),
+    };
+
     let mut parsed = Args {
-        backend: args.next().unwrap_or_else(|| "cpu".to_string()),
+        backend,
         data_dir: None,
         cifar10: false,
         epochs: None,
@@ -98,6 +121,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
         lr_decay_factor: None,
         batch_size: None,
         momentum: None,
+        serve: false,
+        port: 8080,
     };
 
     while let Some(arg) = args.next() {
@@ -146,6 +171,15 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
                     .next()
                     .ok_or_else(|| "--momentum requires a number".to_string())?;
                 parsed.momentum = Some(value.parse()?);
+            }
+            "--serve" => {
+                parsed.serve = true;
+            }
+            "--port" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--port requires a number".to_string())?;
+                parsed.port = value.parse()?;
             }
             _ => return Err(format!("unknown argument '{arg}'").into()),
         }

@@ -4,4 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+axum = { version = "=0.8.1", features = ["multipart"] }
 cudarc = { version = "0.14.0", default-features = false, features = ["std", "driver", "nvrtc", "cuda-12080"] }
+image = { version = "=0.25.1", default-features = false, features = ["jpeg", "png"] }
+serde = { version = "=1.0.197", features = ["derive"] }
+serde_json = "=1.0.115"
+sysinfo = "=0.30.12"
+tokio = { version = "=1.37.0", features = ["full"] }
+tower = { version = "=0.5.2", features = ["util"] }
+tower-http = { version = "=0.6.2", features = ["fs"] }
+uuid = { version = "=1.8.0", features = ["v4"] }
