@@ -48,8 +48,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for metric in history.metrics {
         match (metric.test_correct, metric.test_total) {
             (Some(test_correct), Some(test_total)) => println!(
-                "Epoch {:>2}: train loss = {:.4}, train accuracy = {}/{}, test accuracy = {}/{}",
+                "Epoch {:>2}: lr = {:.6}, train loss = {:.4}, train accuracy = {}/{}, test accuracy = {}/{}",
                 metric.epoch,
+                metric.learning_rate,
                 metric.train_avg_loss,
                 metric.train_correct,
                 metric.train_total,
@@ -58,8 +59,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             _ if metric.epoch % 5 == 0 || metric.epoch + 1 == options.epochs => {
                 println!(
-                    "Epoch {:>2}: avg loss = {:.4}, accuracy = {}/{}",
-                    metric.epoch, metric.train_avg_loss, metric.train_correct, metric.train_total
+                    "Epoch {:>2}: lr = {:.6}, avg loss = {:.4}, accuracy = {}/{}",
+                    metric.epoch,
+                    metric.learning_rate,
+                    metric.train_avg_loss,
+                    metric.train_correct,
+                    metric.train_total
                 )
             }
             _ => {}
@@ -76,6 +81,8 @@ struct Args {
     cifar10: bool,
     epochs: Option<usize>,
     learning_rate: Option<f32>,
+    lr_decay_epochs: Option<usize>,
+    lr_decay_factor: Option<f32>,
     batch_size: Option<usize>,
     momentum: Option<f32>,
 }
@@ -87,6 +94,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
         cifar10: false,
         epochs: None,
         learning_rate: None,
+        lr_decay_epochs: None,
+        lr_decay_factor: None,
         batch_size: None,
         momentum: None,
     };
@@ -114,6 +123,18 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, Box<dyn st
                     .ok_or_else(|| "--lr requires a number".to_string())?;
                 parsed.learning_rate = Some(value.parse()?);
             }
+            "--lr-decay-epochs" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--lr-decay-epochs requires a number".to_string())?;
+                parsed.lr_decay_epochs = Some(value.parse()?);
+            }
+            "--lr-decay-factor" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--lr-decay-factor requires a number".to_string())?;
+                parsed.lr_decay_factor = Some(value.parse()?);
+            }
             "--batch-size" => {
                 let value = args
                     .next()
@@ -139,6 +160,12 @@ fn apply_overrides(options: &mut trainer::TrainOptions, args: &Args) {
     }
     if let Some(learning_rate) = args.learning_rate {
         options.learning_rate = learning_rate;
+    }
+    if let Some(lr_decay_epochs) = args.lr_decay_epochs {
+        options.lr_decay_epochs = lr_decay_epochs;
+    }
+    if let Some(lr_decay_factor) = args.lr_decay_factor {
+        options.lr_decay_factor = lr_decay_factor;
     }
     if let Some(batch_size) = args.batch_size {
         options.batch_size = batch_size;

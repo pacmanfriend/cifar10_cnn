@@ -5,6 +5,8 @@ use std::{error::Error, path::Path};
 pub struct TrainOptions {
     pub epochs: usize,
     pub learning_rate: f32,
+    pub lr_decay_epochs: usize,
+    pub lr_decay_factor: f32,
     pub batch_size: usize,
     pub momentum: f32,
     pub seed: u64,
@@ -15,6 +17,8 @@ impl TrainOptions {
         Self {
             epochs: 50,
             learning_rate: 0.05,
+            lr_decay_epochs: 0,
+            lr_decay_factor: 1.0,
             batch_size: 1,
             momentum: 0.0,
             seed: 42,
@@ -25,6 +29,8 @@ impl TrainOptions {
         Self {
             epochs: 10,
             learning_rate: 0.003,
+            lr_decay_epochs: 5,
+            lr_decay_factor: 0.5,
             batch_size: 64,
             momentum: 0.9,
             seed: 42,
@@ -35,6 +41,7 @@ impl TrainOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EpochMetrics {
     pub epoch: usize,
+    pub learning_rate: f32,
     pub train_avg_loss: f32,
     pub train_correct: usize,
     pub train_total: usize,
@@ -94,6 +101,15 @@ pub fn shuffle_indices(indices: &mut [usize], rng: &mut random::Rng) {
     }
 }
 
+pub fn learning_rate_for_epoch(options: TrainOptions, epoch: usize) -> f32 {
+    if options.lr_decay_epochs == 0 {
+        return options.learning_rate;
+    }
+
+    let decay_steps = epoch / options.lr_decay_epochs;
+    options.learning_rate * options.lr_decay_factor.powi(decay_steps as i32)
+}
+
 pub fn train_demo(
     backend: network::Backend,
     options: TrainOptions,
@@ -140,6 +156,10 @@ fn train_dataset(
         (0.0..=1.0).contains(&options.momentum),
         "momentum must be in the range [0, 1]"
     );
+    assert!(
+        options.lr_decay_factor > 0.0,
+        "lr_decay_factor must be greater than zero"
+    );
 
     let mut rng = random::Rng::new(options.seed);
     let mut net = network::Network::new(config, &mut rng, backend)?;
@@ -148,6 +168,7 @@ fn train_dataset(
     let mut metrics = Vec::with_capacity(options.epochs);
 
     for epoch in 0..options.epochs {
+        let learning_rate = learning_rate_for_epoch(options, epoch);
         let mut total_loss = 0.0;
         let mut correct = 0;
 
@@ -161,7 +182,7 @@ fn train_dataset(
             let (loss, batch_correct) = net.train_step_batch_with_momentum(
                 &input,
                 &targets,
-                options.learning_rate,
+                learning_rate,
                 options.momentum,
             )?;
             total_loss += loss * targets.len() as f32;
@@ -178,6 +199,7 @@ fn train_dataset(
 
         metrics.push(EpochMetrics {
             epoch,
+            learning_rate,
             train_avg_loss: total_loss / train_len as f32,
             train_correct: correct,
             train_total: train_len,
@@ -218,7 +240,7 @@ fn evaluate(
 
 #[cfg(test)]
 mod tests {
-    use super::{make_batch, shuffle_indices, train_demo, TrainOptions};
+    use super::{learning_rate_for_epoch, make_batch, shuffle_indices, train_demo, TrainOptions};
     use crate::{compute::random, data::datasets, training::network};
 
     #[test]
@@ -253,8 +275,33 @@ mod tests {
         let options = TrainOptions::cifar10();
 
         assert_eq!(options.learning_rate, 0.003);
+        assert_eq!(options.lr_decay_epochs, 5);
+        assert_eq!(options.lr_decay_factor, 0.5);
         assert_eq!(options.momentum, 0.9);
         assert_eq!(options.batch_size, 64);
+    }
+
+    #[test]
+    fn learning_rate_schedule_uses_step_decay() {
+        let mut options = TrainOptions::demo();
+        options.learning_rate = 0.1;
+        options.lr_decay_epochs = 3;
+        options.lr_decay_factor = 0.5;
+
+        assert!((learning_rate_for_epoch(options, 0) - 0.1).abs() < 1e-6);
+        assert!((learning_rate_for_epoch(options, 2) - 0.1).abs() < 1e-6);
+        assert!((learning_rate_for_epoch(options, 3) - 0.05).abs() < 1e-6);
+        assert!((learning_rate_for_epoch(options, 7) - 0.025).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_decay_epochs_disables_learning_rate_schedule() {
+        let mut options = TrainOptions::demo();
+        options.learning_rate = 0.1;
+        options.lr_decay_epochs = 0;
+        options.lr_decay_factor = 0.5;
+
+        assert!((learning_rate_for_epoch(options, 100) - 0.1).abs() < 1e-6);
     }
 
     #[test]
@@ -272,6 +319,25 @@ mod tests {
             .metrics
             .iter()
             .all(|metric| metric.train_total == history.train_len));
+
+        Ok(())
+    }
+
+    #[test]
+    fn train_history_records_scheduled_learning_rate() -> Result<(), Box<dyn std::error::Error>> {
+        let mut options = super::TrainOptions::demo();
+        options.epochs = 3;
+        options.batch_size = 12;
+        options.learning_rate = 0.1;
+        options.lr_decay_epochs = 2;
+        options.lr_decay_factor = 0.5;
+
+        let history = train_demo(network::Backend::Cpu, options)?;
+
+        assert_eq!(history.metrics.len(), 3);
+        assert!((history.metrics[0].learning_rate - 0.1).abs() < 1e-6);
+        assert!((history.metrics[1].learning_rate - 0.1).abs() < 1e-6);
+        assert!((history.metrics[2].learning_rate - 0.05).abs() < 1e-6);
 
         Ok(())
     }
