@@ -49,4 +49,4 @@ RUN cargo build --release
 
 EXPOSE 8080
 
-CMD ["./target/release/cifar10_cnn", "--serve", "--port", "8080"]
+CMD ["./target/release/cifar10_cnn", "--port", "8080"]
