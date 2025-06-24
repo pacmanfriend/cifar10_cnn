@@ -351,6 +351,44 @@ impl Graph {
         }
     }
 
+    pub fn save_params(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let tensors: Vec<(&[usize], &[f32])> = self
+            .parameters
+            .iter()
+            .map(|&id| {
+                (
+                    self.nodes[id].shape.as_slice(),
+                    self.nodes[id].data.data.as_slice(),
+                )
+            })
+            .collect();
+        crate::training::checkpoint::save(path, &tensors)
+    }
+
+    pub fn load_params(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let tensors = crate::training::checkpoint::load(path)?;
+        if tensors.len() != self.parameters.len() {
+            return Err(format!(
+                "checkpoint has {} tensors, model expects {}",
+                tensors.len(),
+                self.parameters.len()
+            )
+            .into());
+        }
+        for (&id, (ckpt_shape, ckpt_data)) in self.parameters.iter().zip(tensors.iter()) {
+            if self.nodes[id].shape != *ckpt_shape {
+                return Err(format!(
+                    "shape mismatch for parameter {id}: model {:?}, checkpoint {:?}",
+                    self.nodes[id].shape, ckpt_shape
+                )
+                .into());
+            }
+            self.nodes[id].data.data.clone_from(ckpt_data);
+            self.velocities[id] = Some(tensor::Tensor::zeros(ckpt_shape.clone()));
+        }
+        Ok(())
+    }
+
     pub fn sgd_step(&mut self, lr: f32) {
         self.momentum_sgd_step(lr, 0.0);
     }

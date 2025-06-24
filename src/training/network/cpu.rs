@@ -118,6 +118,20 @@ impl CpuNetwork {
         (loss, predictions[0])
     }
 
+    pub(super) fn save_weights(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph.save_params(path)
+    }
+
+    pub(super) fn load_weights(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph.load_params(path)
+    }
+
     pub(super) fn predict_batch(&mut self, input: &tensor::Tensor) -> Vec<usize> {
         let logits = self.forward_logits(input);
         let probs = loss::softmax_batch(&logits);

@@ -83,6 +83,20 @@ impl Network {
         }
     }
 
+    pub fn save_weights(&self, path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+        match &self.inner {
+            NetworkInner::Cpu(net) => net.save_weights(path),
+            NetworkInner::Gpu(net) => net.save_weights(path),
+        }
+    }
+
+    pub fn load_weights(&mut self, path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => net.load_weights(path),
+            NetworkInner::Gpu(net) => net.load_weights(path),
+        }
+    }
+
     pub fn predict_batch(&mut self, input: &tensor::Tensor) -> Result<Vec<usize>, Box<dyn Error>> {
         match &mut self.inner {
             NetworkInner::Cpu(net) => Ok(net.predict_batch(input)),
@@ -110,6 +124,36 @@ impl Network {
 mod tests {
     use super::{Backend, Network};
     use crate::{compute::random, config, data::datasets};
+
+    #[test]
+    fn save_and_load_weights_preserves_predictions() -> Result<(), Box<dyn std::error::Error>> {
+        let config = config::ModelConfig::demo();
+        let dataset = datasets::make_fake_dataset();
+        let input = crate::compute::tensor::Tensor::from_data(
+            dataset.iter().take(2).flat_map(|(x, _)| x.data.iter().copied()).collect(),
+            vec![2, 1, 8, 8],
+        );
+        let targets: Vec<usize> = dataset.iter().take(2).map(|(_, t)| *t).collect();
+
+        let mut rng = random::Rng::new(99);
+        let mut net = Network::new(config, &mut rng, Backend::Cpu)?;
+        for _ in 0..5 {
+            net.train_step_batch(&input, &targets, 0.05)?;
+        }
+
+        let path = std::env::temp_dir().join("cifar10_net_test.ck10");
+        net.save_weights(&path)?;
+
+        let mut rng2 = random::Rng::new(0);
+        let mut fresh = Network::new(config, &mut rng2, Backend::Cpu)?;
+        fresh.load_weights(&path)?;
+
+        let original = net.predict_batch(&input)?;
+        let restored = fresh.predict_batch(&input)?;
+        assert_eq!(original, restored);
+
+        Ok(())
+    }
 
     #[test]
     fn cpu_train_step_is_deterministic_for_fixed_seed() -> Result<(), Box<dyn std::error::Error>> {

@@ -36,12 +36,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let load_path = args.load_path.as_deref();
+    let save_path = args.save_path.as_deref();
+
     let (options, history) = if let Some(data_dir) = data_dir {
         let mut options = trainer::TrainOptions::cifar10();
         apply_overrides(&mut options, &args);
         println!("Dataset: CIFAR-10 at {}", data_dir.display());
         println!("Start {backend:?} CIFAR-10 training...\n");
-        let history = trainer::train_cifar10(backend, options, data_dir)?;
+        let history =
+            trainer::train_cifar10_with_checkpoints(backend, options, data_dir, load_path, save_path)?;
         (options, history)
     } else {
         let mut options = trainer::TrainOptions::demo();
@@ -49,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dataset_len = trainer::demo_dataset_len();
         println!("Dataset size: {dataset_len}");
         println!("Start {backend:?} demo training...\n");
-        let history = trainer::train_demo(backend, options)?;
+        let history =
+            trainer::train_demo_with_checkpoints(backend, options, load_path, save_path)?;
         (options, history)
     };
 
@@ -93,6 +98,8 @@ struct Args {
     lr_decay_factor: Option<f32>,
     batch_size: Option<usize>,
     momentum: Option<f32>,
+    load_path: Option<PathBuf>,
+    save_path: Option<PathBuf>,
     serve: bool,
     port: u16,
 }
@@ -121,6 +128,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, Box<dyn std::e
         lr_decay_factor: None,
         batch_size: None,
         momentum: None,
+        load_path: None,
+        save_path: None,
         serve: false,
         port: 8080,
     };
@@ -171,6 +180,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, Box<dyn std::e
                     .next()
                     .ok_or_else(|| "--momentum requires a number".to_string())?;
                 parsed.momentum = Some(value.parse()?);
+            }
+            "--load" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--load requires a path argument".to_string())?;
+                parsed.load_path = Some(PathBuf::from(value));
+            }
+            "--save" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--save requires a path argument".to_string())?;
+                parsed.save_path = Some(PathBuf::from(value));
             }
             "--serve" => {
                 parsed.serve = true;

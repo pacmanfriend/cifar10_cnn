@@ -133,6 +133,111 @@ impl CudaNetwork {
         self.module.load_function(name)
     }
 
+    pub fn save_weights(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let conv1_w = self.stream.memcpy_dtov(&self.conv1_w)?;
+        let conv1_b = self.stream.memcpy_dtov(&self.conv1_b)?;
+        let linear_w = self.stream.memcpy_dtov(&self.linear_w)?;
+        let linear_b = self.stream.memcpy_dtov(&self.linear_b)?;
+
+        let conv1_w_shape = vec![
+            self.config.conv_out_channels,
+            self.config.input_channels,
+            self.config.conv_kernel,
+            self.config.conv_kernel,
+        ];
+        let conv1_b_shape = vec![self.config.conv_out_channels];
+        let linear_w_shape = vec![self.config.num_classes, self.config.flat_dim()];
+        let linear_b_shape = vec![self.config.num_classes];
+
+        if let (Some(conv2_w_dev), Some(conv2_b_dev)) =
+            (self.conv2_w.as_ref(), self.conv2_b.as_ref())
+        {
+            let conv2_out_channels = self.config.conv2_out_channels.unwrap();
+            let conv2_w = self.stream.memcpy_dtov(conv2_w_dev)?;
+            let conv2_b = self.stream.memcpy_dtov(conv2_b_dev)?;
+            let conv2_w_shape = vec![
+                conv2_out_channels,
+                self.config.conv_out_channels,
+                self.config.conv_kernel,
+                self.config.conv_kernel,
+            ];
+            let conv2_b_shape = vec![conv2_out_channels];
+            crate::training::checkpoint::save(
+                path,
+                &[
+                    (conv1_w_shape.as_slice(), conv1_w.as_slice()),
+                    (conv1_b_shape.as_slice(), conv1_b.as_slice()),
+                    (conv2_w_shape.as_slice(), conv2_w.as_slice()),
+                    (conv2_b_shape.as_slice(), conv2_b.as_slice()),
+                    (linear_w_shape.as_slice(), linear_w.as_slice()),
+                    (linear_b_shape.as_slice(), linear_b.as_slice()),
+                ],
+            )
+        } else {
+            crate::training::checkpoint::save(
+                path,
+                &[
+                    (conv1_w_shape.as_slice(), conv1_w.as_slice()),
+                    (conv1_b_shape.as_slice(), conv1_b.as_slice()),
+                    (linear_w_shape.as_slice(), linear_w.as_slice()),
+                    (linear_b_shape.as_slice(), linear_b.as_slice()),
+                ],
+            )
+        }
+    }
+
+    pub fn load_weights(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let tensors = crate::training::checkpoint::load(path)?;
+        let has_conv2 = self.conv2_w.is_some();
+        let expected = if has_conv2 { 6 } else { 4 };
+        if tensors.len() != expected {
+            return Err(format!(
+                "checkpoint has {} tensors, model expects {expected}",
+                tensors.len()
+            )
+            .into());
+        }
+
+        self.conv1_w = self.stream.memcpy_stod(&tensors[0].1)?;
+        self.conv1_b = self.stream.memcpy_stod(&tensors[1].1)?;
+
+        let linear_idx = if has_conv2 {
+            self.conv2_w = Some(self.stream.memcpy_stod(&tensors[2].1)?);
+            self.conv2_b = Some(self.stream.memcpy_stod(&tensors[3].1)?);
+            4
+        } else {
+            2
+        };
+
+        self.linear_w = self.stream.memcpy_stod(&tensors[linear_idx].1)?;
+        self.linear_b = self.stream.memcpy_stod(&tensors[linear_idx + 1].1)?;
+
+        self.velocity_conv1_w = self
+            .stream
+            .alloc_zeros::<f32>(self.config.conv1_weight_len())?;
+        self.velocity_conv1_b = self
+            .stream
+            .alloc_zeros::<f32>(self.config.conv_out_channels)?;
+        if has_conv2 {
+            self.velocity_conv2_w = Some(
+                self.stream
+                    .alloc_zeros::<f32>(self.config.conv2_weight_len())?,
+            );
+            self.velocity_conv2_b = Some(
+                self.stream
+                    .alloc_zeros::<f32>(self.config.conv2_out_channels.unwrap())?,
+            );
+        }
+        self.velocity_linear_w = self
+            .stream
+            .alloc_zeros::<f32>(self.config.num_classes * self.config.flat_dim())?;
+        self.velocity_linear_b = self
+            .stream
+            .alloc_zeros::<f32>(self.config.num_classes)?;
+
+        Ok(())
+    }
+
     pub fn train_step(
         &mut self,
         input_host: &[f32],

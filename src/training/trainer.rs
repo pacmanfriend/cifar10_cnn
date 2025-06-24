@@ -114,6 +114,15 @@ pub fn train_demo(
     backend: network::Backend,
     options: TrainOptions,
 ) -> Result<TrainingHistory, Box<dyn Error>> {
+    train_demo_with_checkpoints(backend, options, None, None)
+}
+
+pub fn train_demo_with_checkpoints(
+    backend: network::Backend,
+    options: TrainOptions,
+    load_path: Option<&Path>,
+    save_path: Option<&Path>,
+) -> Result<TrainingHistory, Box<dyn Error>> {
     train_dataset(
         backend,
         config::ModelConfig::demo(),
@@ -121,6 +130,8 @@ pub fn train_demo(
         None,
         options,
         false,
+        load_path,
+        save_path,
     )
 }
 
@@ -128,6 +139,16 @@ pub fn train_cifar10(
     backend: network::Backend,
     options: TrainOptions,
     data_dir: &Path,
+) -> Result<TrainingHistory, Box<dyn Error>> {
+    train_cifar10_with_checkpoints(backend, options, data_dir, None, None)
+}
+
+pub fn train_cifar10_with_checkpoints(
+    backend: network::Backend,
+    options: TrainOptions,
+    data_dir: &Path,
+    load_path: Option<&Path>,
+    save_path: Option<&Path>,
 ) -> Result<TrainingHistory, Box<dyn Error>> {
     let (train, test) = datasets::load_cifar10(data_dir)?;
     train_dataset(
@@ -137,6 +158,8 @@ pub fn train_cifar10(
         Some(test),
         options,
         true,
+        load_path,
+        save_path,
     )
 }
 
@@ -147,6 +170,8 @@ fn train_dataset(
     test: Option<datasets::Dataset>,
     options: TrainOptions,
     shuffle_each_epoch: bool,
+    load_path: Option<&Path>,
+    save_path: Option<&Path>,
 ) -> Result<TrainingHistory, Box<dyn Error>> {
     assert!(
         options.batch_size > 0,
@@ -163,6 +188,11 @@ fn train_dataset(
 
     let mut rng = random::Rng::new(options.seed);
     let mut net = network::Network::new(config, &mut rng, backend)?;
+
+    if let Some(path) = load_path {
+        net.load_weights(path)?;
+        println!("Loaded weights from {}", path.display());
+    }
     let train_len = train.len();
     let test_len = test.as_ref().map(Vec::len);
     let mut metrics = Vec::with_capacity(options.epochs);
@@ -206,6 +236,11 @@ fn train_dataset(
             test_correct,
             test_total,
         });
+    }
+
+    if let Some(path) = save_path {
+        net.save_weights(path)?;
+        println!("Saved weights to {}", path.display());
     }
 
     Ok(TrainingHistory {
