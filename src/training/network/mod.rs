@@ -104,6 +104,16 @@ impl Network {
         }
     }
 
+    pub fn predict_batch_with_scores(
+        &mut self,
+        input: &tensor::Tensor,
+    ) -> Result<(Vec<usize>, Vec<f32>), Box<dyn Error>> {
+        match &mut self.inner {
+            NetworkInner::Cpu(net) => Ok(net.predict_batch_with_scores(input)),
+            NetworkInner::Gpu(net) => Ok(net.predict_batch_with_scores(input)?),
+        }
+    }
+
     #[cfg(test)]
     fn train_step_batch_with_predictions(
         &mut self,

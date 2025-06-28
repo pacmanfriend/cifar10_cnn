@@ -123,7 +123,7 @@ pub fn train_demo_with_checkpoints(
     load_path: Option<&Path>,
     save_path: Option<&Path>,
 ) -> Result<TrainingHistory, Box<dyn Error>> {
-    train_dataset(
+    let (history, _net) = train_dataset(
         backend,
         config::ModelConfig::demo(),
         datasets::make_fake_dataset(),
@@ -132,7 +132,9 @@ pub fn train_demo_with_checkpoints(
         false,
         load_path,
         save_path,
-    )
+        None,
+    )?;
+    Ok(history)
 }
 
 pub fn train_cifar10(
@@ -151,7 +153,7 @@ pub fn train_cifar10_with_checkpoints(
     save_path: Option<&Path>,
 ) -> Result<TrainingHistory, Box<dyn Error>> {
     let (train, test) = datasets::load_cifar10(data_dir)?;
-    train_dataset(
+    let (history, _net) = train_dataset(
         backend,
         config::ModelConfig::cifar10(),
         train,
@@ -160,7 +162,57 @@ pub fn train_cifar10_with_checkpoints(
         true,
         load_path,
         save_path,
+        None,
+    )?;
+    Ok(history)
+}
+
+pub fn train_cifar10_take_net(
+    backend: network::Backend,
+    options: TrainOptions,
+    data_dir: &Path,
+    progress: Option<Box<dyn Fn(&EpochMetrics) + Send>>,
+) -> Result<(TrainingHistory, network::Network), Box<dyn Error>> {
+    let (train, test) = datasets::load_cifar10(data_dir)?;
+    train_dataset(
+        backend,
+        config::ModelConfig::cifar10(),
+        train,
+        Some(test),
+        options,
+        true,
+        None,
+        None,
+        progress,
     )
+}
+
+pub fn validate_train_options(options: &TrainOptions) -> Result<(), String> {
+    if options.batch_size == 0 {
+        return Err("batch_size must be greater than zero".to_string());
+    }
+    if options.batch_size > 1024 {
+        return Err("batch_size must not exceed 1024".to_string());
+    }
+    if options.epochs == 0 {
+        return Err("epochs must be greater than zero".to_string());
+    }
+    if options.epochs > 1000 {
+        return Err("epochs must not exceed 1000".to_string());
+    }
+    if !options.learning_rate.is_finite() || options.learning_rate <= 0.0 {
+        return Err("learning_rate must be a positive finite number".to_string());
+    }
+    if options.learning_rate > 10.0 {
+        return Err("learning_rate must not exceed 10".to_string());
+    }
+    if !(0.0..=1.0).contains(&options.momentum) {
+        return Err("momentum must be in [0, 1]".to_string());
+    }
+    if !options.lr_decay_factor.is_finite() || options.lr_decay_factor <= 0.0 {
+        return Err("lr_decay_factor must be a positive finite number".to_string());
+    }
+    Ok(())
 }
 
 fn train_dataset(
@@ -172,19 +224,11 @@ fn train_dataset(
     shuffle_each_epoch: bool,
     load_path: Option<&Path>,
     save_path: Option<&Path>,
-) -> Result<TrainingHistory, Box<dyn Error>> {
-    assert!(
-        options.batch_size > 0,
-        "batch_size must be greater than zero"
-    );
-    assert!(
-        (0.0..=1.0).contains(&options.momentum),
-        "momentum must be in the range [0, 1]"
-    );
-    assert!(
-        options.lr_decay_factor > 0.0,
-        "lr_decay_factor must be greater than zero"
-    );
+    epoch_callback: Option<Box<dyn Fn(&EpochMetrics) + Send>>,
+) -> Result<(TrainingHistory, network::Network), Box<dyn Error>> {
+    debug_assert!(options.batch_size > 0);
+    debug_assert!((0.0..=1.0).contains(&options.momentum));
+    debug_assert!(options.lr_decay_factor > 0.0);
 
     let mut rng = random::Rng::new(options.seed);
     let mut net = network::Network::new(config, &mut rng, backend)?;
@@ -227,7 +271,7 @@ fn train_dataset(
             None => (None, None),
         };
 
-        metrics.push(EpochMetrics {
+        let metric = EpochMetrics {
             epoch,
             learning_rate,
             train_avg_loss: total_loss / train_len as f32,
@@ -235,7 +279,11 @@ fn train_dataset(
             train_total: train_len,
             test_correct,
             test_total,
-        });
+        };
+        if let Some(ref cb) = epoch_callback {
+            cb(&metric);
+        }
+        metrics.push(metric);
     }
 
     if let Some(path) = save_path {
@@ -243,11 +291,14 @@ fn train_dataset(
         println!("Saved weights to {}", path.display());
     }
 
-    Ok(TrainingHistory {
-        train_len,
-        test_len,
-        metrics,
-    })
+    Ok((
+        TrainingHistory {
+            train_len,
+            test_len,
+            metrics,
+        },
+        net,
+    ))
 }
 
 fn evaluate(

@@ -133,9 +133,18 @@ impl CpuNetwork {
     }
 
     pub(super) fn predict_batch(&mut self, input: &tensor::Tensor) -> Vec<usize> {
+        let (predictions, _) = self.predict_batch_with_scores(input);
+        predictions
+    }
+
+    pub(super) fn predict_batch_with_scores(
+        &mut self,
+        input: &tensor::Tensor,
+    ) -> (Vec<usize>, Vec<f32>) {
         let logits = self.forward_logits(input);
         let probs = loss::softmax_batch(&logits);
-        loss::argmax_batch(&probs)
+        let predictions = loss::argmax_batch(&probs);
+        (predictions, probs.data)
     }
 
     pub(super) fn train_step_batch_with_predictions(

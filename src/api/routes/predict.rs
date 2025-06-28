@@ -1,12 +1,7 @@
-use crate::{
-    api::{
-        image_util::image_bytes_to_tensor,
-        types::{ErrorResponse, PredictResponse},
-        ApiState, CIFAR10_CLASS_NAMES,
-    },
-    compute::random,
-    config,
-    training::network::Network,
+use crate::api::{
+    image_util::image_bytes_to_tensor,
+    types::{ErrorResponse, PredictResponse},
+    ApiState, CIFAR10_CLASS_NAMES,
 };
 use axum::{
     extract::{Multipart, State},
@@ -61,42 +56,27 @@ pub async fn predict(State(state): State<ApiState>, mut multipart: Multipart) ->
         }
     };
 
-    let backend = state.backend().await;
-    let mut rng = random::Rng::new(42);
-    let mut network = match Network::new(config::ModelConfig::cifar10(), &mut rng, backend.into()) {
-        Ok(network) => network,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("failed to initialize model: {err}"),
-                }),
-            )
-                .into_response()
-        }
-    };
+    match state.predict_with_scores(&input).await {
+        Err(err) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse { error: err }),
+        )
+            .into_response(),
+        Ok((predictions, scores)) => {
+            let class_id = predictions[0];
+            let num_classes = CIFAR10_CLASS_NAMES.len();
+            // scores содержит softmax-вероятности для всего батча [N * num_classes];
+            // берём первый (и единственный) сэмпл
+            let sample_scores: Vec<f32> = scores[..num_classes].to_vec();
+            let confidence = sample_scores[class_id];
 
-    let predictions = match network.predict_batch(&input) {
-        Ok(predictions) => predictions,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("prediction failed: {err}"),
-                }),
-            )
-                .into_response()
+            Json(PredictResponse {
+                class_id,
+                class_name: CIFAR10_CLASS_NAMES[class_id].to_string(),
+                confidence,
+                scores: sample_scores,
+            })
+            .into_response()
         }
-    };
-    let class_id = predictions[0];
-    let mut scores = vec![0.0; CIFAR10_CLASS_NAMES.len()];
-    scores[class_id] = 1.0;
-
-    Json(PredictResponse {
-        class_id,
-        class_name: CIFAR10_CLASS_NAMES[class_id].to_string(),
-        confidence: 1.0,
-        scores,
-    })
-    .into_response()
+    }
 }

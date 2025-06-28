@@ -2,8 +2,13 @@ pub mod image_util;
 pub mod routes;
 pub mod types;
 
-use crate::api::types::{ApiBackend, ModelInfo, TrainStatus};
-use axum::{routing::get, Router};
+use crate::{
+    api::types::{ApiBackend, ModelInfo, TrainStatus},
+    compute::random,
+    config,
+    training::network,
+};
+use axum::{extract::DefaultBodyLimit, routing::get, Router};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
@@ -15,15 +20,15 @@ pub struct ApiState {
 
 pub struct AppState {
     pub backend: ApiBackend,
-    pub model_loaded: bool,
-    pub jobs: HashMap<String, TrainStatus>,
+    pub model: Option<network::Network>,
+    pub jobs: HashMap<String, Arc<std::sync::Mutex<TrainStatus>>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             backend: ApiBackend::Cpu,
-            model_loaded: true,
+            model: None,
             jobs: HashMap::new(),
         }
     }
@@ -42,7 +47,7 @@ impl ApiState {
             architecture: "Input [1,3,32,32] -> Conv2D(3->32, 3x3, pad=1) -> ReLU -> MaxPool2x2 -> Conv2D(32->64, 3x3, pad=1) -> ReLU -> MaxPool2x2 -> Dense(4096->10)".to_string(),
             param_count: cifar10_param_count(),
             backend: state.backend,
-            loaded: state.model_loaded,
+            loaded: state.model.is_some(),
         }
     }
 
@@ -51,25 +56,88 @@ impl ApiState {
     }
 
     pub async fn set_backend(&self, backend: ApiBackend) {
+        self.inner.lock().await.backend = backend;
+    }
+
+    pub async fn insert_job(&self, job_id: String) -> Arc<std::sync::Mutex<TrainStatus>> {
+        let status = Arc::new(std::sync::Mutex::new(TrainStatus {
+            status: "running".to_string(),
+            epoch: 0,
+            loss: None,
+            accuracy: None,
+            error: None,
+        }));
         let mut state = self.inner.lock().await;
-        state.backend = backend;
-        state.model_loaded = true;
+
+        if state.jobs.len() >= 50 {
+            state.jobs.retain(|_, v| {
+                v.lock()
+                    .map(|s| s.status == "running")
+                    .unwrap_or(true)
+            });
+        }
+        state.jobs.insert(job_id, status.clone());
+        status
     }
 
-    pub async fn insert_job(&self, job_id: String, status: TrainStatus) {
-        self.inner.lock().await.jobs.insert(job_id, status);
-    }
-
-    pub async fn update_job(&self, job_id: &str, status: TrainStatus) {
+    pub async fn job(&self, job_id: &str) -> Option<TrainStatus> {
         self.inner
             .lock()
             .await
             .jobs
-            .insert(job_id.to_string(), status);
+            .get(job_id)
+            .map(|arc| arc.lock().unwrap().clone())
     }
 
-    pub async fn job(&self, job_id: &str) -> Option<TrainStatus> {
-        self.inner.lock().await.jobs.get(job_id).cloned()
+    pub async fn set_trained_model(&self, net: network::Network) {
+        self.inner.lock().await.model = Some(net);
+    }
+
+    pub async fn predict_with_scores(
+        &self,
+        input: &crate::compute::tensor::Tensor,
+    ) -> Result<(Vec<usize>, Vec<f32>), String> {
+        let mut state = self.inner.lock().await;
+        match state.model.as_mut() {
+            None => Err(
+                "model not initialized — run training or load weights first".to_string(),
+            ),
+            Some(net) => net
+                .predict_batch_with_scores(input)
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    pub async fn load_model_weights(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let backend = self.backend().await;
+        let mut state = self.inner.lock().await;
+        if state.model.is_none() {
+            let mut rng = random::Rng::new(42);
+            state.model = Some(
+                network::Network::new(config::ModelConfig::cifar10(), &mut rng, backend.into())
+                    .map_err(|e| format!("failed to initialize model: {e}"))?,
+            );
+        }
+        state
+            .model
+            .as_mut()
+            .unwrap()
+            .load_weights(path)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn save_model_weights(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let state = self.inner.lock().await;
+        match state.model.as_ref() {
+            None => Err("no model to save — train or load weights first".to_string()),
+            Some(net) => net.save_weights(path).map_err(|e| e.to_string()),
+        }
     }
 }
 
@@ -108,7 +176,8 @@ pub fn router() -> Router {
         .route("/api/train/{job_id}", get(routes::train::train_status))
         .route(
             "/api/predict",
-            axum::routing::post(routes::predict::predict),
+            axum::routing::post(routes::predict::predict)
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
         )
         .fallback_service(spa)
         .with_state(ApiState::new())

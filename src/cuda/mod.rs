@@ -286,7 +286,10 @@ impl CudaNetwork {
         Ok((loss, correct))
     }
 
-    pub fn predict_batch(&mut self, input: &tensor::Tensor) -> Result<Vec<usize>, DriverError> {
+    pub fn predict_batch_with_scores(
+        &mut self,
+        input: &tensor::Tensor,
+    ) -> Result<(Vec<usize>, Vec<f32>), DriverError> {
         debug_assert_eq!(input.rank(), 4);
         debug_assert_eq!(input.shape[1], self.config.input_channels);
         debug_assert_eq!(input.shape[2], self.config.input_height);
@@ -432,7 +435,13 @@ impl CudaNetwork {
         )?;
 
         let probs_host = self.stream.memcpy_dtov(&probs)?;
-        Ok(predictions_from_probs(&probs_host, self.config.num_classes))
+        let predictions = predictions_from_probs(&probs_host, self.config.num_classes);
+        Ok((predictions, probs_host))
+    }
+
+    pub fn predict_batch(&mut self, input: &tensor::Tensor) -> Result<Vec<usize>, DriverError> {
+        let (predictions, _) = self.predict_batch_with_scores(input)?;
+        Ok(predictions)
     }
 
     pub fn train_step_batch_with_predictions(
