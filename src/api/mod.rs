@@ -20,7 +20,7 @@ pub struct ApiState {
 
 pub struct AppState {
     pub backend: ApiBackend,
-    pub model: Option<network::Network>,
+    pub model: Option<Arc<std::sync::Mutex<network::Network>>>,
     pub jobs: HashMap<String, Arc<std::sync::Mutex<TrainStatus>>>,
 }
 
@@ -90,21 +90,27 @@ impl ApiState {
     }
 
     pub async fn set_trained_model(&self, net: network::Network) {
-        self.inner.lock().await.model = Some(net);
+        self.inner.lock().await.model = Some(Arc::new(std::sync::Mutex::new(net)));
     }
 
     pub async fn predict_with_scores(
         &self,
         input: &crate::compute::tensor::Tensor,
     ) -> Result<(Vec<usize>, Vec<f32>), String> {
-        let mut state = self.inner.lock().await;
-        match state.model.as_mut() {
-            None => Err(
-                "model not initialized — run training or load weights first".to_string(),
-            ),
-            Some(net) => net
-                .predict_batch_with_scores(input)
-                .map_err(|e| e.to_string()),
+        let model_arc = self.inner.lock().await.model.clone();
+        match model_arc {
+            None => Err("model not initialized — run training or load weights first".to_string()),
+            Some(arc) => {
+                let input = input.clone();
+                tokio::task::spawn_blocking(move || {
+                    arc.lock()
+                        .unwrap()
+                        .predict_batch_with_scores(&input)
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| format!("inference task panicked: {e}"))?
+            }
         }
     }
 
@@ -113,31 +119,56 @@ impl ApiState {
         path: &std::path::Path,
     ) -> Result<(), String> {
         let backend = self.backend().await;
-        let mut state = self.inner.lock().await;
-        if state.model.is_none() {
-            let mut rng = random::Rng::new(42);
-            state.model = Some(
-                network::Network::new(config::ModelConfig::cifar10(), &mut rng, backend.into())
-                    .map_err(|e| format!("failed to initialize model: {e}"))?,
-            );
-        }
-        state
-            .model
-            .as_mut()
-            .unwrap()
-            .load_weights(path)
-            .map_err(|e| e.to_string())
+        let model_arc = {
+            let mut state = self.inner.lock().await;
+            if let Some(arc) = state.model.clone() {
+                arc
+            } else {
+                let mut rng = random::Rng::new(42);
+                let net = network::Network::new(
+                    config::ModelConfig::cifar10(),
+                    &mut rng,
+                    backend.into(),
+                )
+                .map_err(|e| format!("failed to initialize model: {e}"))?;
+                let arc = Arc::new(std::sync::Mutex::new(net));
+                state.model = Some(arc.clone());
+                arc
+            }
+        };
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            model_arc
+                .lock()
+                .unwrap()
+                .load_weights(&path)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("load task panicked: {e}"))?
     }
 
     pub async fn save_model_weights(
         &self,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        let state = self.inner.lock().await;
-        match state.model.as_ref() {
-            None => Err("no model to save — train or load weights first".to_string()),
-            Some(net) => net.save_weights(path).map_err(|e| e.to_string()),
-        }
+        let model_arc = {
+            let state = self.inner.lock().await;
+            match state.model.clone() {
+                None => return Err("no model to save — train or load weights first".to_string()),
+                Some(arc) => arc,
+            }
+        };
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            model_arc
+                .lock()
+                .unwrap()
+                .save_weights(&path)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("save task panicked: {e}"))?
     }
 }
 
