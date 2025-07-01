@@ -172,8 +172,6 @@ impl CpuNetwork {
             .iter()
             .all(|&target| target < self.config.num_classes));
 
-        self.graph.reset_for_iteration();
-
         let logits = self.forward_logits_node(input);
         let loss = self.graph.softmax_ce(logits, targets);
         let predictions = self.graph.predictions_for_loss(loss);
