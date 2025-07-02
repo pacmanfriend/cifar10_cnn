@@ -24,6 +24,8 @@ pub struct AppState {
     pub jobs: HashMap<String, Arc<std::sync::Mutex<TrainStatus>>>,
 }
 
+const MAX_CONCURRENT_TRAINING: usize = 4;
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -59,7 +61,10 @@ impl ApiState {
         self.inner.lock().await.backend = backend;
     }
 
-    pub async fn insert_job(&self, job_id: String) -> Arc<std::sync::Mutex<TrainStatus>> {
+    pub async fn insert_job(
+        &self,
+        job_id: String,
+    ) -> Result<Arc<std::sync::Mutex<TrainStatus>>, String> {
         let status = Arc::new(std::sync::Mutex::new(TrainStatus {
             status: "running".to_string(),
             epoch: 0,
@@ -69,6 +74,17 @@ impl ApiState {
         }));
         let mut state = self.inner.lock().await;
 
+        let running = state
+            .jobs
+            .values()
+            .filter(|v| v.lock().map(|s| s.status == "running").unwrap_or(true))
+            .count();
+        if running >= MAX_CONCURRENT_TRAINING {
+            return Err(format!(
+                "too many concurrent training jobs (max {MAX_CONCURRENT_TRAINING})"
+            ));
+        }
+
         if state.jobs.len() >= 50 {
             state.jobs.retain(|_, v| {
                 v.lock()
@@ -77,7 +93,7 @@ impl ApiState {
             });
         }
         state.jobs.insert(job_id, status.clone());
-        status
+        Ok(status)
     }
 
     pub async fn job(&self, job_id: &str) -> Option<TrainStatus> {

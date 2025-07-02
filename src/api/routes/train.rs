@@ -11,16 +11,16 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use std::path::Component;
+use std::path::{Component, PathBuf};
 use uuid::Uuid;
 
-fn validate_data_dir(path: &str) -> Result<(), String> {
+fn validate_path(field: &str, path: &str) -> Result<(), String> {
     if path.is_empty() {
-        return Err("data_dir must not be empty".to_string());
+        return Err(format!("{field} must not be empty"));
     }
     for component in std::path::Path::new(path).components() {
         if matches!(component, Component::ParentDir) {
-            return Err("data_dir must not contain '..' components".to_string());
+            return Err(format!("{field} must not contain '..' components"));
         }
     }
     Ok(())
@@ -30,12 +30,30 @@ pub async fn start_train(
     State(state): State<ApiState>,
     Json(request): Json<TrainRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = validate_data_dir(&request.data_dir) {
+    if let Err(err) = validate_path("data_dir", &request.data_dir) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse { error: err }),
         )
             .into_response();
+    }
+    if let Some(path) = &request.load_checkpoint {
+        if let Err(err) = validate_path("load_checkpoint", path) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: err }),
+            )
+                .into_response();
+        }
+    }
+    if let Some(path) = &request.save_checkpoint {
+        if let Err(err) = validate_path("save_checkpoint", path) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: err }),
+            )
+                .into_response();
+        }
     }
 
     let mut options = trainer::TrainOptions::cifar10();
@@ -68,9 +86,20 @@ pub async fn start_train(
 
     let backend = request.backend.unwrap_or(state.backend().await);
     let data_dir = request.data_dir;
+    let load_checkpoint = request.load_checkpoint.map(PathBuf::from);
+    let save_checkpoint = request.save_checkpoint.map(PathBuf::from);
     let job_id = Uuid::new_v4().to_string();
-    
-    let job_arc = state.insert_job(job_id.clone()).await;
+
+    let job_arc = match state.insert_job(job_id.clone()).await {
+        Ok(arc) => arc,
+        Err(err) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse { error: err }),
+            )
+                .into_response()
+        }
+    };
     let job_arc_for_progress = job_arc.clone();
 
     let job_state = state.clone();
@@ -79,6 +108,8 @@ pub async fn start_train(
             backend.into(),
             options,
             std::path::Path::new(&data_dir),
+            load_checkpoint.as_deref(),
+            save_checkpoint.as_deref(),
             Some(Box::new(move |metrics: &trainer::EpochMetrics| {
                 if let Ok(mut status) = job_arc_for_progress.lock() {
                     status.epoch = metrics.epoch;
