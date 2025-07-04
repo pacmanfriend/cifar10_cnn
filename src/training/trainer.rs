@@ -171,6 +171,8 @@ pub fn train_cifar10_take_net(
     backend: network::Backend,
     options: TrainOptions,
     data_dir: &Path,
+    load_checkpoint: Option<&Path>,
+    save_checkpoint: Option<&Path>,
     progress: Option<Box<dyn Fn(&EpochMetrics) + Send>>,
 ) -> Result<(TrainingHistory, network::Network), Box<dyn Error>> {
     let (train, test) = datasets::load_cifar10(data_dir)?;
@@ -181,8 +183,8 @@ pub fn train_cifar10_take_net(
         Some(test),
         options,
         true,
-        None,
-        None,
+        load_checkpoint,
+        save_checkpoint,
         progress,
     )
 }

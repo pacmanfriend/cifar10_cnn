@@ -66,6 +66,8 @@ pub struct TrainRequest {
     pub lr_decay_factor: Option<f32>,
     pub batch_size: Option<usize>,
     pub momentum: Option<f32>,
+    pub load_checkpoint: Option<String>,
+    pub save_checkpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
