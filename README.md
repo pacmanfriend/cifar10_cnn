@@ -4,6 +4,17 @@
 CPU-путь использует собственный граф вычислений; GPU-путь — CUDA-ядра через NVRTC.  
 Управление через браузерный UI, бэкенд — HTTP API на Axum.
 
+## Требования
+
+Для Docker-запуска нужны Docker и, если используется GPU, NVIDIA Container Toolkit с доступом к `--gpus all`.
+Для локальной разработки используются версии, закреплённые в проекте:
+
+- Rust `1.83.0` через `rust-toolchain.toml`
+- Node.js `22.x` (`Dockerfile` использует `22.15.0`)
+- CUDA `12.8` для GPU-бэкенда
+
+CPU-режим можно запускать без CUDA-совместимой видеокарты.
+
 ## Быстрый старт
 
 ### 1. Собрать образ
@@ -35,6 +46,46 @@ http://localhost:8080
 ```
 
 Сервер отдаёт UI на корневом пути и API по префиксу `/api`.
+
+---
+
+## Локальная разработка
+
+### Production-like запуск из репозитория
+
+Сначала соберите статический SvelteKit UI:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+```
+
+Затем запустите Rust-сервер из корня репозитория:
+
+```bash
+cargo run -- --port 8080
+```
+
+Сервер будет раздавать `web/build/` и API на `http://localhost:8080`.
+
+### Dev-режим UI
+
+В одном терминале запустите API:
+
+```bash
+cargo run -- --port 8080
+```
+
+Во втором терминале запустите Vite dev server:
+
+```bash
+cd web
+npm run dev
+```
+
+Vite проксирует запросы `/api` на `http://localhost:8080`.
 
 ---
 
@@ -86,7 +137,7 @@ docker run --rm --gpus all \
 
 На странице `/model`:
 
-- **Save** — укажите путь внутри контейнера, например `weights.bin`, и нажмите Save
+- **Save** — укажите путь внутри контейнера, например `weights/model.ck10`, и нажмите Save
 - **Load** — укажите тот же путь и нажмите Load
 
 Чтобы веса сохранялись между перезапусками контейнера, примонтируйте папку:
@@ -99,7 +150,29 @@ docker run --rm --gpus all \
   cifar10-cnn
 ```
 
-Тогда в UI указывайте путь `weights/model.bin`.
+Тогда в UI указывайте путь `weights/model.ck10`.
+
+Файл `.ck10` — собственный бинарный checkpoint-формат проекта, не PyTorch/ONNX.
+
+---
+
+## Проверки
+
+Перед фиксацией изменений полезно запускать:
+
+```bash
+cargo fmt --check
+cargo test
+cargo clippy -- -D warnings
+```
+
+Для фронтенда:
+
+```bash
+cd web
+npm run check
+npm run build
+```
 
 ---
 
